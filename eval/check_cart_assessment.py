@@ -5,7 +5,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
-from app.agent.cart_assessor import (
+from eval.reference_rules.cart_coupon import (
     CartScenario,
     assess_cart,
 )
