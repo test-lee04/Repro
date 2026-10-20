@@ -1,99 +1,135 @@
-"""실제 Ollama 연결과 제보 구조화를 확인한다."""
+"""임의 제보의 모델 해석과 추가 질문 흐름을 확인한다."""
 
 import argparse
 import asyncio
+import json
+from pathlib import Path
+from uuid import uuid4
 
 from dotenv import load_dotenv
 
 from app.agent.model_client import build_model_client
 from app.agent.report_parser import ReportParser
-from app.agent.report_schema import ExpectationSource
+from app.agent.report_schema import ClarificationAnswer
 
 
-CASES = {
-    "complete": {
-        "report": (
-            "SAVE10 쿠폰을 적용하고 수량을 "
-            "2개에서 3개로 바꾸면 합계가 그대로예요."
-        ),
-        "public_spec": (
-            "상품 단가는 10000원이다. "
-            "SAVE10 쿠폰은 10% 할인한다. "
-            "합계 = 단가 × 수량 × (쿠폰 적용 시 0.9). "
-            "수량을 변경하면 합계를 다시 계산해야 한다."
-        ),
-    },
-    "unclear": {
-        "report": "결제 금액이 이상해요.",
-        "public_spec": "",
-    },
-}
+async def main(args: argparse.Namespace) -> None:
+    """제보를 분석하고 선택적으로 추가 답변을 반영한다.
 
+    Args:
+        args: 제보, 요구사항, 대화 모드 설정.
 
-async def main(case_name: str):
+    Returns:
+        없음.
+
+    Notes:
+        브라우저를 조작하지 않는다.
+        최초 분석 후 최대 세 번의 답변 회차를 허용한다.
+        각 분석 결과를 로컬 산출물 폴더에 저장한다.
+    """
     load_dotenv()
 
     parser = ReportParser(build_model_client())
-    case = CASES[case_name]
+    answers: list[ClarificationAnswer] = []
 
-    result = await parser.parse(
-        report=case["report"],
-        public_spec=case["public_spec"],
+    artifact_dir = (
+        Path("artifacts")
+        / f"report-{uuid4().hex}"
     )
+    artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    spec = result["spec"]
+    for round_index in range(4):
+        result = await parser.parse(
+            report=args.report,
+            public_spec=args.public_spec,
+            answers=answers,
+        )
 
-    print("해석 결과:")
-    print(spec.model_dump_json(indent=2))
+        spec = result["spec"]
 
-    print("\n추가 질문 필요:", spec.needs_clarification)
-    print("모델 사용량:", result["usage"])
-    print("소요 시간:", result["elapsed_seconds"], "초")
+        print(f"\n분석 회차: {round_index + 1}")
+        print(spec.model_dump_json(indent=2))
+        print("추가 질문 필요:", spec.needs_clarification)
+        print("모델 사용량:", result["usage"])
+        print("소요 시간:", result["elapsed_seconds"], "초")
 
-    if case_name == "complete":
-        assert (
-            spec.expectation_source
-            == ExpectationSource.PUBLIC_SPEC
-        ), "기대 동작은 공개 요구사항에서 가져와야 합니다."
-
-        extracted_inputs = {
-            item.name: item.value
-            for item in spec.inputs
+        record = {
+            "report": args.report,
+            "public_spec": args.public_spec,
+            "answers": result["answers"],
+            "spec": spec.model_dump(mode="json"),
+            "usage": result["usage"],
+            "elapsed_seconds": result["elapsed_seconds"],
         }
 
-        assert extracted_inputs.get("coupon") == "SAVE10", (
-            "제보에 명시된 쿠폰 코드가 누락되거나 잘못됐습니다."
+        output_path = (
+            artifact_dir
+            / f"round-{round_index + 1}.json"
         )
 
-        assert extracted_inputs.get("initial_quantity") == "2", (
-            "변경 전 수량이 누락되거나 잘못됐습니다."
+        output_path.write_text(
+            json.dumps(
+                record,
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
         )
 
-        assert extracted_inputs.get("updated_quantity") == "3", (
-            "변경 후 수량이 누락되거나 잘못됐습니다."
-        )
+        if not spec.needs_clarification:
+            print("해석 결과에 추가 질문이 없습니다.")
+            break
 
-    else:
-        assert (
-            spec.expectation_source
-            == ExpectationSource.UNKNOWN
-        ), "근거 없는 기대 동작을 만들면 안 됩니다."
+        if not args.interactive:
+            print(
+                "추가 질문이 생성됐습니다. "
+                "대화 모드는 실행하지 않았습니다."
+            )
+            break
 
-        assert spec.needs_clarification, (
-            "불명확한 제보에는 추가 질문이 필요합니다."
-        )
+        if round_index == 3:
+            print("추가 답변 회차 한도에 도달했습니다.")
+            break
 
-    print("\nPASS: 실제 모델 연결 및 기본 조건 검증")
-    print("주의: 해석의 의미 정확성은 출력 내용을 읽고 확인하세요.")
+        for item in spec.missing_information:
+            print("\n확인 질문:", item.question)
+
+            answer = input(
+                "답변을 입력하세요. 중단하려면 엔터: "
+            ).strip()
+
+            if not answer:
+                print("답변 입력을 중단했습니다.")
+                print("저장 위치:", artifact_dir)
+                return
+
+            answers.append(
+                ClarificationAnswer(
+                    question=item.question,
+                    answer=answer,
+                )
+            )
+
+    print("\n저장 위치:", artifact_dir)
+    print("해석 종료는 버그 재현 완료를 의미하지 않습니다.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--case",
-        choices=list(CASES),
-        default="complete",
-    )
-    args = parser.parse_args()
+    argument_parser = argparse.ArgumentParser()
 
-    asyncio.run(main(args.case))
+    argument_parser.add_argument(
+        "--report",
+        required=True,
+    )
+    argument_parser.add_argument(
+        "--public-spec",
+        default="",
+    )
+    argument_parser.add_argument(
+        "--interactive",
+        action="store_true",
+    )
+
+    asyncio.run(
+        main(argument_parser.parse_args())
+    )
