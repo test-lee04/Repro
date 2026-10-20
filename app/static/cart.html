@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ReproPilot · Cart Lab</title>
+<style>
+body{background:#f4f6fa;color:#182238;font:16px system-ui;margin:0;padding:48px 20px}main{max-width:680px;margin:auto}article{background:white;border:1px solid #dde3ef;border-radius:20px;padding:28px;margin:24px 0}h1{font-size:36px;letter-spacing:-1px}label{display:block;margin:20px 0 8px}input,button{font:inherit;padding:12px;border:1px solid #cbd3e1;border-radius:8px}button{background:#245de3;color:white;cursor:pointer}a{color:#245de3}output{display:block;font-size:32px;font-weight:700;margin:20px 0}.muted{color:#607086;font-size:14px}
+</style>
+<main>
+<p class="muted">REPROPILOT / 재현 실험용 서비스</p>
+<h1>장바구니 실험실</h1>
+<p>수량과 쿠폰을 변경해 합계가 올바르게 갱신되는지 확인하세요.</p>
+<article>
+<h2>캠퍼스 노트</h2><p>개당 10,000원 · 최대 10개</p>
+<label for="quantity">수량</label><input id="quantity" type="number" min="1" max="10" value="2">
+<label for="coupon">쿠폰 코드</label><input id="coupon" placeholder="SAVE10"><button id="apply">쿠폰 적용</button>
+<p id="message" role="status">사용 가능한 쿠폰: SAVE10 (10% 할인)</p>
+<p>결제 합계</p><output id="total" aria-label="결제 합계">20000</output>
+<button id="reset">처음 상태로 초기화</button>
+</article>
+<p class="muted">정상 요구사항: 합계 = 단가 × 수량 × (쿠폰 적용 시 0.9). 금액 단위는 원입니다.</p>
+<p><a href="?version=buggy">버그 버전</a> · <a href="?version=fixed">정상 버전</a></p>
+</main>
+<script>
+const fixed = new URLSearchParams(location.search).get('version') === 'fixed';
+const quantity = document.querySelector('#quantity');
+const coupon = document.querySelector('#coupon');
+const total = document.querySelector('#total');
+const message = document.querySelector('#message');
+let applied = false;
+function render(){total.textContent = String(Math.round(10000 * Number(quantity.value) * (applied ? .9 : 1)));}
+quantity.addEventListener('input',()=>{
+  if(!quantity.validity.valid) { message.textContent='수량은 1~10의 정수로 입력하세요.'; return; }
+  // Deliberate fixture defect: changing quantity after applying a coupon leaves a stale total.
+  if(fixed || !applied) render();
+});
+document.querySelector('#apply').onclick=()=>{
+  if(!quantity.validity.valid) return;
+  applied = coupon.value.trim() === 'SAVE10';
+  message.textContent = applied ? '10% 쿠폰 적용 완료' : '유효하지 않은 쿠폰입니다.';
+  render();
+};
+document.querySelector('#reset').onclick=()=>{
+  quantity.value=2; coupon.value=''; applied=false;
+  message.textContent='사용 가능한 쿠폰: SAVE10 (10% 할인)';render();
+};
+</script>
+</html>

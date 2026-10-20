@@ -1,0 +1,6 @@
+from typing import Protocol
+
+
+class BrowserTools(Protocol):
+    async def observe(self, session_id: str) -> dict: ...
+    async def execute(self, session_id: str, action: dict) -> dict: ...
