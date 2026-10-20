@@ -5,3 +5,4 @@ __pycache__/
 .env
 artifacts/*
 !artifacts/.gitkeep
+.DS_Store
