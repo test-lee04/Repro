@@ -1,4 +1,4 @@
-"""제보와 현재 화면을 바탕으로 다음 행동 하나를 선택한다."""
+"""제보와 화면 관찰을 바탕으로 실행 가능한 행동을 선택한다."""
 
 import json
 from time import perf_counter
@@ -13,7 +13,22 @@ def validate_action_target(
     decision: NextDecision,
     observation: dict,
 ) -> None:
-    """선택한 행동이 현재 관찰에서 실행 가능한지 검사한다."""
+    """관찰 도구가 허용한 행동인지 검사한다.
+
+    Args:
+        decision: 모델이 선택한 다음 결정.
+        observation: 선택의 근거가 된 화면 관찰.
+
+    Returns:
+        없음.
+
+    Raises:
+        ValueError: 대상이 없거나 사용할 수 없는 행동인 경우.
+
+    Notes:
+        HTML 태그만으로 실행 가능 여부를 추측하지 않는다.
+        실제 실행 직전의 대상 상태는 브라우저 도구가 다시 검사한다.
+    """
     if decision.decision != "act":
         return
 
@@ -22,38 +37,41 @@ def validate_action_target(
     if action is None:
         raise ValueError("행동 정보가 없습니다.")
 
-    target = next(
-        (
-            element
-            for element in observation["elements"]
-            if element["element_id"] == action.element_id
-        ),
-        None,
-    )
+    matches = [
+        element
+        for element in observation["elements"]
+        if element["element_id"] == action.element_id
+    ]
 
-    if target is None:
+    if len(matches) != 1:
         raise ValueError(
-            "AI가 현재 관찰에 없는 요소를 선택했습니다."
+            "행동 대상을 관찰에서 하나로 확인할 수 없습니다."
         )
+
+    target = matches[0]
 
     if not target["enabled"]:
         raise ValueError(
-            "AI가 비활성화된 요소를 선택했습니다."
+            "비활성화된 요소에는 행동할 수 없습니다."
         )
 
-    if action.kind == "click" and target["tag"] != "button":
-        raise ValueError(
-            "입력창이나 출력 요소를 클릭 대상으로 선택했습니다."
-        )
+    allowed_actions = target.get("actions", [])
 
-    if action.kind == "fill" and target["tag"] != "input":
+    if action.kind not in allowed_actions:
         raise ValueError(
-            "입력창이 아닌 요소에 입력하려고 했습니다."
+            "관찰 도구가 해당 요소에 허용하지 않은 행동입니다."
         )
 
 
 class ActionPlanner:
+    """모델의 행동 선택과 관찰 기반 검증을 연결한다."""
+
     def __init__(self, client: JsonModelClient):
+        """행동 선택기를 준비한다.
+
+        Args:
+            client: 구조화 응답을 생성하는 모델 연결 객체.
+        """
         self.client = client
 
     async def next_action(
@@ -62,9 +80,26 @@ class ActionPlanner:
         observation: dict,
         history: list[dict],
     ) -> dict:
+        """제보와 실제 실행 기록으로 다음 행동 하나를 선택한다.
+
+        Args:
+            spec: 구조화된 버그 제보.
+            observation: 현재 화면의 관찰 결과.
+            history: 실제 행동과 전후 화면 기록.
+
+        Returns:
+            검증된 결정, 모델 사용량, 소요 시간.
+
+        Raises:
+            ValueError: 선택한 행동이 관찰 정보와 맞지 않는 경우.
+            pydantic.ValidationError: 모델 응답 형식이 잘못된 경우.
+
+        Notes:
+            행동을 실제로 실행하는 함수는 아니다.
+            실행은 브라우저 도구가 담당한다.
+        """
         schema = NextDecision.model_json_schema()
 
-        # 모델이 작성한 설명이 아니라 실제 실행 결과를 전달한다.
         executed_history = [
             {
                 "executed_action": item["action"],
@@ -76,19 +111,20 @@ class ActionPlanner:
             for item in history
         ]
 
-        # 현재는 화면에서 읽은 요소 정보만 사용한다.
-        # 스크린샷과 실제 접속 URL은 모델에 전달하지 않는다.
         payload = {
             "bug_spec": spec.model_dump(mode="json"),
             "observation": {
                 "elements": observation["elements"],
+                "truncated": observation.get(
+                    "truncated",
+                    False,
+                ),
             },
             "history": executed_history,
             "history_note": (
-                "history는 실제 실행한 행동의 기록이다. "
-                "fill은 입력창의 값만 변경하고 버튼을 클릭하지 않는다. "
-                "쿠폰 코드 입력과 쿠폰 적용 버튼 클릭은 별도 행동이다. "
-                "실행 기록에 없는 행동은 수행됐다고 가정하지 않는다."
+                "기록은 실제로 실행한 행동이다. "
+                "입력과 버튼 클릭은 별도 행동이다. "
+                "실행 기록에 없는 행동을 수행했다고 가정하지 않는다."
             ),
             "output_schema": schema,
         }
@@ -125,6 +161,7 @@ class ActionPlanner:
             "decision": decision,
             "usage": response["usage"],
             "elapsed_seconds": round(
-                perf_counter() - started, 2
+                perf_counter() - started,
+                2,
             ),
         }
