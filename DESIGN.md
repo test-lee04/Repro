@@ -1,5 +1,18 @@
 # Repro 코드 설계 v1
 
+> 공통 구조 전환 진행 중
+>
+> 프로젝트는 특정 쿠폰 사례가 아니라 다양한 버그 제보를 처리하는
+> QA 보조 Agent를 목표로 한다.
+>
+> R0에서 사례 전용 판정을 평가 영역으로 분리했다.
+> R1에서는 기존 제보 모델을 재사용하고 대상 서비스,
+> 공통 검증 조건, 판정 상태를 정리한다.
+>
+> 아래 초기 설계 중 demo_cart 고정, 예산 소진 시 미재현 처리 등의
+> 내용은 후속 단계에서 대체한다.
+> 예산 소진은 재현 여부를 확정할 근거가 아니며 판정 보류로 취급한다.
+
 상태: 설계. 현재 실행 가능한 것은 장바구니 데모와 수동 기준 테스트뿐이다.
 참고: 제공된 all_total_vue_student/doc/README.md 및 all_total_vue_student.zip의 server.py, agent/graph.py, agent/deps.py, agent/retry.py, agent/session_store.py, requirements.txt를 읽어 구조를 검토했다. 샘플을 실행하거나 코드를 복사하지 않았다.
 
