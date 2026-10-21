@@ -19,6 +19,9 @@ def rate(numerator, denominator):
 def summarize(manifest):
     """실패와 보류를 포함한 모든 실제 시도를 집계한다."""
     rows = manifest['rows']
+    mode = manifest.get('evaluation_mode', 'without_confirmation')
+    if any(row.get('evaluation_mode', mode) != mode for row in rows):
+        raise ValueError('추가 답변 없는 평가와 답변 후 평가를 같은 결과표에 섞을 수 없습니다.')
     identities = [row['trial_id'] for row in rows]
     if len(identities) != len(set(identities)):
         raise ValueError('같은 평가 시도를 중복 집계할 수 없습니다.')
@@ -30,6 +33,8 @@ def summarize(manifest):
     durations = [row['elapsed_seconds'] for row in rows]
     result = {
         'attempted': len(rows), 'planned': manifest['planned_trials'],
+        'evaluation_mode': mode,
+        'timing_scope': manifest.get('timing_scope', 'full_agent_trial'),
         'evaluation_status': manifest['status'],
         'exact_match': rate(sum(row['actual_status'] == row['expected_status'] for row in rows), len(rows)),
         'bug_detection': rate(sum(row['actual_status'] == 'reproduced' for row in buggy), len(buggy)),
@@ -75,7 +80,7 @@ def write_reports(folder):
     manifest = json.loads((folder / 'evaluation.json').read_text(encoding='utf-8'))
     summary = summarize(manifest)
     write_json(folder / 'summary.json', summary)
-    fields = ['trial_id', 'case_id', 'variant', 'repeat', 'expected_status', 'actual_status',
+    fields = ['evaluation_mode', 'trial_id', 'case_id', 'variant', 'repeat', 'expected_status', 'actual_status',
               'elapsed_seconds', 'action_attempts', 'successful_actions', 'test_generated',
               'verification_attempted', 'verification_seconds', 'test_status', 'artifact_dir', 'error']
     with (folder / 'results.csv').open('w', encoding='utf-8-sig', newline='') as file:
@@ -83,14 +88,19 @@ def write_reports(folder):
         writer.writeheader()
         for row in manifest['rows']:
             data = {key: row.get(key) for key in fields}
+            data['evaluation_mode'] = row.get('evaluation_mode', summary['evaluation_mode'])
             data.update({key: row['usage'].get(key) for key in ['model_calls', 'model_errors', 'input_tokens', 'output_tokens']})
             writer.writerow(data)
-    lines = ['# Repro 평가 결과', '',
+    mode_label = '확인 답변 반영 후 실행' if summary['evaluation_mode'] == 'with_confirmation' else '추가 답변 없는 실행'
+    lines = ['# Repro 평가 결과', '', f'평가 방식: {mode_label}',
              f"평가 상태: {manifest['status']} / 실제 시도: {summary['attempted']} / 계획: {summary['planned']}",
              f"자료 버전: {manifest['dataset_version']}", f"자료 식별값: {manifest['dataset_fingerprint']}",
              f"앱 코드 식별값: {manifest.get('agent_code_fingerprint', '기록 없음')}", '',
              '오류·보류도 시도 수에 포함합니다. 이 결과는 아래 평가 자료에 한정됩니다.', '',
              '| 지표 | 실측 결과 |', '| --- | --- |']
+    if summary['evaluation_mode'] == 'with_confirmation':
+        lines[2:2] = ['답변을 확인한 뒤의 실행 결과입니다. 이전 질문 생성과 사용자 답변 시간은 포함하지 않습니다.',
+                      '추가 답변 없는 자동 평가의 정확도나 전체 소요 시간으로 합산하지 않습니다.', '']
     for key, label in [('exact_match', '정답 판정 일치'), ('bug_detection', '버그 환경 탐지'),
                        ('normal_confirmation', '정상 환경 미재현 확인'), ('false_positive', '정상 환경 오탐'),
                        ('resolved_binary', '버그·정상 판정 완료'), ('clarification', '정보 부족 질문 요청'),

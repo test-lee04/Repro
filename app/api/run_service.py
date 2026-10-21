@@ -40,10 +40,12 @@ async def execute_workflow(request, run_id, folder, *, answers=None, model_clien
 
     load_dotenv()
     client = model_client if model_client is not None else build_model_client()
+    context_path = Path(folder) / "interpretation_context.json"
+    retained = json.loads(context_path.read_text(encoding="utf-8")) if context_path.exists() else None
     async with PlaywrightSessions(targets={}) as sessions:
         session_id = await sessions.open(run_id=run_id, start_url=str(request.target.start_url))
         workflow = ReproductionWorkflow(
-            ReportParser(client), VerificationPlanner(client),
+            ReportParser(client, retained_context=retained), VerificationPlanner(client),
             ReproductionLoop(ActionPlanner(client), PlaywrightTools(sessions, folder)),
             CheckpointReviewer(client), TargetBinder(client, diagnostic_dir=folder),
             VerificationBrowser(sessions, folder),
@@ -95,7 +97,7 @@ class RunService:
         """새 제보를 접수하고 작업 식별자를 즉시 반환한다."""
         return self._submit(request, history=[], parent=None)
 
-    def _submit(self, request, *, history, parent):
+    def _submit(self, request, *, history, parent, retained_context=None):
         """원래 요청과 누적 답변으로 독립된 실행 폴더를 만든다."""
         if self.closed:
             raise RuntimeError('서버가 종료 중입니다.')
@@ -116,6 +118,8 @@ class RunService:
         folder.mkdir()
         write_json(folder / 'request.json', request.model_dump(mode='json'))
         write_json(folder / 'clarification_history.json', {'answers': history})
+        if retained_context is not None:
+            write_json(folder / 'interpretation_context.json', retained_context)
         self.save(run_id)
         task = asyncio.create_task(self._execute(run_id, request, history))
         self.tasks[run_id] = task
@@ -176,7 +180,7 @@ class RunService:
             entries.append({'question_id': f'{run_id}-q{index}', 'question': question})
         return entries
 
-    def answer(self, run_id, submitted):
+    def answer(self, run_id, submitted, reparse_report=False):
         """서버가 제시한 질문의 답변을 받아 연결된 새 실행을 만든다.
 
         Args:
@@ -190,6 +194,8 @@ class RunService:
             이전 결과와 증거를 보존하며 브라우저를 새로 연다.
             이미 처리한 동일 답변은 기존 후속 작업을 반환한다.
         """
+        if type(reparse_report) is not bool:
+            raise ValueError('전체 해석 여부는 불리언 값이어야 합니다.')
         parent = self.get(run_id)
         if parent['status'] != 'needs_information':
             raise RuntimeError('추가 질문이 필요한 작업에만 답변할 수 있습니다.')
@@ -203,7 +209,7 @@ class RunService:
         normalized = {key: value.strip() for key, value in submitted.items()}
         previous = parent.get('submitted_answers')
         if parent.get('child_run_id'):
-            if previous == normalized:
+            if previous == normalized and parent.get("reparse_report", False) == reparse_report:
                 return self.get(parent['child_run_id'])
             raise RuntimeError('이미 답변한 작업입니다. 연결된 새 작업의 질문을 확인하세요.')
         if parent.get('clarification_round', 0) >= 5:
@@ -213,11 +219,19 @@ class RunService:
         request = RunRequest.model_validate_json((folder / 'request.json').read_text(encoding='utf-8'))
         history_path = folder / 'clarification_history.json'
         history = json.loads(history_path.read_text(encoding='utf-8'))['answers'] if history_path.exists() else []
+        result = self.result(run_id)
+        retained = None
+        if not reparse_report and result.get("condition_generation", {}).get("clarification_scope") == "expectation":
+            from app.agent.report_schema import BugSpec, ClarificationAnswer
+            from app.agent.report_parser import expectation_context
+            previous_spec = BugSpec.model_validate(result.get("interpretation", {}).get("spec"))
+            previous_answers = [ClarificationAnswer(question=item["question"], answer=item["answer"]) for item in history]
+            retained = expectation_context(previous_spec, request.report, request.target.public_spec or "", previous_answers)
         history.extend({'question_id': item['question_id'], 'question': item['question'],
                         'answer': normalized[item['question_id']], 'source_run_id': run_id}
                        for item in questions)
-        child = self._submit(request, history=history, parent=parent)
-        self.records[run_id].update(child_run_id=child['run_id'], submitted_answers=normalized,
+        child = self._submit(request, history=history, parent=parent, retained_context=retained)
+        self.records[run_id].update(child_run_id=child['run_id'], submitted_answers=normalized, reparse_report=reparse_report,
                                     questions=questions)
         self.save(run_id)
         return child

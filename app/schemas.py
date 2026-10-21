@@ -7,6 +7,7 @@ from pydantic import (
     ConfigDict,
     Field,
     HttpUrl,
+    StrictBool,
     model_validator,
 )
 
@@ -100,3 +101,4 @@ class AnswersRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     answers: dict[str, str]
+    reparse_report: StrictBool = False

@@ -2,6 +2,7 @@
 
 import copy
 import json
+import re
 import time
 import unicodedata
 from typing import Literal
@@ -69,6 +70,14 @@ class ScopeReview(BaseModel):
 
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     results: list[ScopeItem] = Field(min_length=1)
+
+
+class TextExpectationError(ValueError):
+    """원문에서 표시 문구나 비교 의미를 확정하지 못한 조건을 보존한다."""
+
+    def __init__(self, message, conditions):
+        super().__init__(message)
+        self.conditions = list(conditions)
 
 
 class ReviewResponseError(RuntimeError):
@@ -283,6 +292,7 @@ class VerificationPlanner:
                     answers=answers,
                 )
                 if plan.status == 'candidate':
+                    self._validate_text_literals(plan)
                     await self._review_scope(plan, record)
 
 
@@ -296,6 +306,33 @@ class VerificationPlanner:
                 )
 
                 self._save_diagnostics(diagnostic_path, payload, attempts, "failed_attempt")
+                if attempt_number == self.max_attempts and isinstance(error, TextExpectationError):
+                    questions = []
+                    details = []
+                    for condition in error.conditions:
+                        question = (
+                            f"검사 대상 '{condition.target_description}'에 표시돼야 할 정확한 문구를 "
+                            '큰따옴표로 적어 주세요. 해당 문구가 영역에 포함되면 되는지, '
+                            '영역 전체 내용이 그 문구와 정확히 같아야 하는지도 알려 주세요.'
+                        )
+                        if question not in questions:
+                            questions.append(question)
+                        details.append({"condition_id": condition.condition_id,
+                                        "target_description": condition.target_description,
+                                        "source": condition.source.value,
+                                        "evidence": condition.evidence,
+                                        "reason": str(error)})
+                    clarified = VerificationPlan(
+                        status="needs_information",
+                        summary="표시 문구 또는 비교 의미를 확정하지 못해 해당 부분의 확인이 필요합니다.",
+                        conditions=[], questions=questions, limitation=None,
+                    )
+                    record["clarification_details"] = details
+                    self._save_diagnostics(diagnostic_path, payload, attempts, "needs_information")
+                    return {"diagnostic_path": str(diagnostic_path), "plan": clarified,
+                            "attempts": attempts, "usage": self._summarize_usage(attempts),
+                            "clarification_details": details, "clarification_scope": "expectation",
+                            "elapsed_seconds": time.perf_counter() - started}
                 if attempt_number == self.max_attempts or not isinstance(error, ValueError):
                     raise VerificationPlanningError(
                         f"검증 조건 준비에 실패했습니다: {error}. 기록: {diagnostic_path}",
@@ -427,10 +464,48 @@ class VerificationPlanner:
                                    "source_evidence": documents[item.evidence_id].evidence,
                                    "suggested_target": item.suggested_target})
             if issues:
-                # 근거 문구는 검증한 원본에서 코드로 복원하며 모델의 제안은 자동 적용하지 않는다.
+                # 비교 의미만 확정하지 못한 경우에는 제한된 재생성 뒤 사용자에게 해당 부분을 묻는다.
+                # 범위 오류나 검토 응답 형식 오류를 사용자의 정보 부족으로 바꾸지는 않는다.
+                if all(item.status == "same_scope" for item in review.results):
+                    unresolved = {item.condition_id for item in review.results
+                                  if item.comparison.status != "consistent"}
+                    raise TextExpectationError(
+                        "원문에서 표시 문구 또는 비교 의미를 확정하지 못했습니다. "
+                        + json.dumps(issues, ensure_ascii=False),
+                        [item for item in conditions if item.condition_id in unresolved],
+                    )
                 raise ValueError("원문과 검사 범위 또는 비교 조건을 다시 맞추세요. "
                                  + json.dumps(issues, ensure_ascii=False))
             return
+
+    @staticmethod
+    def _validate_text_literals(plan):
+        """명시적으로 인용한 문구를 기대값에서 임의로 축약하지 않았는지 검사한다.
+
+        Args:
+            plan: 원문 근거를 확인한 조건 후보.
+
+        Raises:
+            TextExpectationError: 명시된 인용 문구와 기대 문자열이 일치하지 않는 경우.
+
+        Notes:
+            문장부호나 공백을 고쳐 넣지 않는다. 인용문이 없으면 이 검사로 경계를 추측하지 않는다.
+            어떤 인용문이 정상 기대인지와 비교 의미는 기존 의미 검토에서 확인한다.
+        """
+        unresolved = []
+        for condition in plan.conditions:
+            if condition.kind != "text":
+                continue
+            literals = [match.group(1) for match in re.finditer(r'"([^"\n]+)"', condition.evidence)]
+            if not literals:
+                literals = [match.group(1) for match in re.finditer(r"'([^'\n]+)'", condition.evidence)]
+            if literals and condition.expected_value not in literals:
+                unresolved.append(condition)
+        if unresolved:
+            raise TextExpectationError(
+                "원문에 인용된 문구와 기대 문자열이 다릅니다. 공백과 문장부호를 포함해 원문 그대로 사용하세요.",
+                unresolved,
+            )
 
     @staticmethod
     def _validate_targets(

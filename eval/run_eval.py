@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 
 from app.api.run_service import execute_workflow
 from app.agent.model_client import build_model_client
+from app.agent.report_parser import expectation_context
+from eval.confirmation import load_confirmation
 from app.schemas import RunRequest
 from app.testing.replay import RecordedReplayRunner, write_json
 from eval.fixtures import CASES, FIXTURE_VERSION, FixtureServer, dataset_fingerprint
@@ -27,7 +29,7 @@ def expected_status(case, variant):
     return 'needs_information' if case.needs_information else 'reproduced' if variant == 'buggy' else 'not_reproduced'
 
 
-async def run_trial(case, variant, repeat, server, root, timeout, verify_tests):
+async def run_trial(case, variant, repeat, server, root, timeout, verify_tests, *, confirmation=None):
     """한 평가 시도를 실행하며 성공·오류·보류를 빠짐없이 기록한다."""
     trial_id = uuid4().hex
     folder = root / trial_id
@@ -43,11 +45,22 @@ async def run_trial(case, variant, repeat, server, root, timeout, verify_tests):
         'expected_status': expected_status(case, variant), 'actual_status': 'inconclusive',
         'artifact_dir': str(folder.resolve()), 'error': None, 'verification_attempted': False,
         'verification_seconds': None,
+        'evaluation_mode': 'with_confirmation' if confirmation is not None else 'without_confirmation',
     }
     try:
         meter = MeteredClient(build_model_client(), folder / 'model_calls.json')
         async with asyncio.timeout(timeout):
-            result = await execute_workflow(request, trial_id, folder, model_client=meter)
+            if confirmation is None:
+                result = await execute_workflow(request, trial_id, folder, model_client=meter)
+            else:
+                answers = confirmation["answers"]
+                context = expectation_context(confirmation["spec"], case.report, "", [])
+                write_json(folder / "interpretation_context.json", context)
+                write_json(folder / "confirmed_answers.json", {
+                    "source_path": confirmation["path"], "source_fingerprint": confirmation["fingerprint"],
+                    "answers": [item.model_dump(mode="json") for item in answers],
+                })
+                result = await execute_workflow(request, trial_id, folder, model_client=meter, answers=answers)
         row['actual_status'] = result['reproduction_status']
         row['error'] = result.get('error')
     except asyncio.CancelledError:
@@ -105,26 +118,42 @@ def agent_fingerprint():
 async def evaluate(args):
     """선택한 평가 자료를 모두 같은 실행 함수로 처리한다."""
     load_dotenv()
+    cases = [case for case in CASES if args.case == 'all' or case.case_id == args.case]
+    confirmed_path = getattr(args, "confirmed_plan", None)
+    if confirmed_path is not None and len(cases) != 1:
+        raise ValueError("답변 후 평가는 --case로 평가 자료 하나를 선택하세요.")
+    confirmation = load_confirmation(confirmed_path, cases[0]) if confirmed_path is not None else None
+    mode = "with_confirmation" if confirmation is not None else "without_confirmation"
     root = Path('artifacts') / f'evaluation-{uuid4().hex}'
     root.mkdir(parents=True)
-    cases = [case for case in CASES if args.case == 'all' or case.case_id == args.case]
     trials = [(case, variant, repeat) for repeat in range(1, args.repeats + 1)
               for case in cases for variant in (['buggy'] if case.needs_information else ['buggy', 'fixed'])]
     manifest = {'dataset_version': FIXTURE_VERSION, 'dataset_fingerprint': dataset_fingerprint(),
                 'created_at': datetime.now(timezone.utc).isoformat(), 'status': 'running',
                 'agent_code_fingerprint': agent_fingerprint(), 'python_version': platform.python_version(),
                 'planned_trials': len(trials), 'selected_cases': [case.case_id for case in cases],
-                'repeats': args.repeats, 'verify_tests': args.verify_tests, 'rows': []}
+                'repeats': args.repeats, 'verify_tests': args.verify_tests, 'rows': [],
+                'evaluation_mode': mode,
+                'timing_scope': 'after_saved_confirmation' if confirmation is not None else 'full_agent_trial',
+                'confirmation': ({'path': confirmation['path'], 'fingerprint': confirmation['fingerprint'],
+                                  'answer_count': len(confirmation['answers'])} if confirmation is not None else None)}
     write_json(root / 'evaluation.json', manifest)
+    print("평가 방식:", "확인 답변 반영 후 실행" if confirmation is not None else "추가 답변 없는 실행", flush=True)
+    if confirmation is not None:
+        print("확인 기록:", confirmation["path"], flush=True)
+        print("이전 질문 생성과 사용자 답변 시간은 이번 측정에 포함하지 않습니다.", flush=True)
     try:
         with FixtureServer() as server:
             for index, (case, variant, repeat) in enumerate(trials, 1):
                 print(f'평가 {index}/{len(trials)}: {case.case_id} / {variant} / {repeat}회차', flush=True)
-                row, cancelled = await run_trial(case, variant, repeat, server, root, args.timeout, args.verify_tests)
+                row, cancelled = await run_trial(case, variant, repeat, server, root, args.timeout,
+                                                  args.verify_tests, confirmation=confirmation)
                 manifest['rows'].append(row)
                 write_json(root / 'evaluation.json', manifest)
                 print('정답:', row['expected_status'], '/ 실제:', row['actual_status'], '/ 시간:', row['elapsed_seconds'], '초', flush=True)
                 print('모델 호출:', row['usage']['model_calls'], '/ 테스트 생성:', row['test_generated'], flush=True)
+                if row.get('verification_attempted'):
+                    print('회귀 테스트 재실행 결과:', row['test_status'], flush=True)
                 if row.get('error'):
                     print('오류:', row['error'].get('type'), row['error'].get('message'), flush=True)
                 if cancelled:
@@ -148,10 +177,13 @@ if __name__ == '__main__':
     parser.add_argument('--repeats', type=int, default=1)
     parser.add_argument('--timeout', type=float, default=300)
     parser.add_argument('--verify-tests', action='store_true')
+    parser.add_argument('--confirmed-plan', type=Path, help='실제 답변이 저장된 verification_plan.json 파일 또는 폴더. 원래 평가와 분리해 측정')
     args = parser.parse_args()
     if args.repeats < 1 or not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error('반복 횟수와 제한 시간은 양수이고 유한해야 합니다.')
     try:
         asyncio.run(evaluate(args))
+    except (ValueError, OSError) as error:
+        parser.exit(1, f'평가 입력 오류: {error}\n')
     except KeyboardInterrupt:
         print('평가를 중단했습니다. 저장한 시도와 보고서는 유지됩니다.')

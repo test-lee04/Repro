@@ -30,6 +30,13 @@ def normalize(text: str) -> str:
     return " ".join(text.split())
 
 
+def expectation_context(spec, report, public_spec, answers):
+    """검증한 해석과 그때까지의 답변을 기대 조건 확인용으로 보존한다."""
+    return {"scope": "expectation", "report": report, "public_spec": public_spec,
+            "spec": spec.model_dump(mode="json"),
+            "answers": [item.model_dump(mode="json") for item in answers]}
+
+
 class ReportParser:
     """제보 해석, 원문 근거 확인, 제한된 응답 수정을 담당한다."""
 
@@ -37,12 +44,14 @@ class ReportParser:
         self,
         client: JsonModelClient,
         max_attempts: int = 2,
+        retained_context: dict | None = None,
     ):
         """해석기를 준비한다.
 
         Args:
             client: 모델 연결 객체.
             max_attempts: 최초 호출을 포함한 최대 시도 횟수.
+            retained_context: 기대 문구만 확인하는 답변에서 재사용할 이전 해석과 입력.
 
         Raises:
             ValueError: 시도 횟수가 양수가 아닌 경우.
@@ -52,6 +61,7 @@ class ReportParser:
 
         self.client = client
         self.max_attempts = max_attempts
+        self.retained_context = copy.deepcopy(retained_context)
 
     @staticmethod
     def generation_schema():
@@ -115,6 +125,8 @@ class ReportParser:
             raise ValueError("제보가 비어 있습니다.")
 
         answer_history = list(answers or [])
+        if self.retained_context is not None:
+            return self._retain_interpretation(report, public_spec, answer_history)
         schema = self.generation_schema()
 
         payload = {
@@ -271,6 +283,55 @@ class ReportParser:
             }
 
         raise RuntimeError("해석 결과를 반환하지 못했습니다.")
+
+    def _retain_interpretation(self, report, public_spec, answers):
+        """기대 조건만 확인하는 답변에서는 원래 해석을 다시 생성하지 않는다.
+
+        Args:
+            report: 이번 실행의 원래 제보.
+            public_spec: 이번 실행의 공개 요구사항.
+            answers: 원래 기록에 새로 누적한 실제 사용자 답변.
+
+        Returns:
+            이전 해석과 현재 답변, 재사용 기록. 모델 사용량은 0이다.
+
+        Raises:
+            ValueError: 보존한 제보나 답변 이력이 현재 요청과 다른 경우.
+
+        Notes:
+            최초 해석의 기대 동작도 원래 기록으로 유지한다.
+            답변으로 확인한 최신 기대 문구는 VerificationPlanner가 answers에서 조건으로 만든다.
+        """
+        context = self.retained_context
+        if context.get("scope") != "expectation":
+            raise ValueError("기대 조건 확인 범위의 해석만 재사용할 수 있습니다.")
+        if context.get("report") != report or context.get("public_spec") != public_spec:
+            raise ValueError("원래 제보 또는 요구사항이 달라 기존 해석을 재사용할 수 없습니다.")
+        old_answers = context.get("answers")
+        current_answers = [item.model_dump(mode="json") for item in answers]
+        if not isinstance(old_answers, list) or len(current_answers) <= len(old_answers):
+            raise ValueError("기대 조건을 확인한 새 사용자 답변이 필요합니다.")
+        if current_answers[:len(old_answers)] != old_answers:
+            raise ValueError("기존 답변 이력이 달라 해석을 재사용할 수 없습니다.")
+        spec = BugSpec.model_validate(context.get("spec"))
+        if spec.needs_clarification or not spec.reported_steps:
+            raise ValueError("초기 제보 해석의 필수 질문이 남아 있어 전체 해석이 필요합니다.")
+        validated, correction, matches = self._resolve_evidence(spec, report, public_spec, answers)
+        self._validate_preconditions(validated, report=report, answers=answers)
+        folder = Path("artifacts") / "report-parser"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{uuid4().hex}.json"
+        retained = {"interpretation_mode": "retained_for_expectation",
+                    "retained_fields": ["preconditions", "reported_steps", "inputs", "actual_behavior"],
+                    "spec": validated.model_dump(mode="json"), "answers": current_answers,
+                    "reason": "기대 문구 확인 답변이므로 재현 행동을 다시 생성하지 않습니다."}
+        self._save_diagnostics(path, retained, [])
+        return {"spec": validated, "answers": current_answers,
+                "usage": {"backend": None, "model": None, "model_calls": 0,
+                          "input_tokens": 0, "output_tokens": 0},
+                "elapsed_seconds": 0, "attempt_count": 0, "source_correction": correction,
+                "evidence_matches": matches, "diagnostic_path": str(path), "question_review": None,
+                "interpretation_mode": "retained_for_expectation"}
 
     @staticmethod
     def _validate_preconditions(spec, *, report, answers):

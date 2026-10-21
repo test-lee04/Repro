@@ -112,6 +112,7 @@ function renderQuestions(job) {
   byId('questions-card').hidden = !show;
   if (!show || renderedQuestions === job.run_id) return;
   renderedQuestions = job.run_id;
+  byId('reparse-report').checked = false;
   questionInputs = new Map();
   const container = byId('questions');
   container.replaceChildren();
@@ -297,7 +298,7 @@ byId('answers-form').addEventListener('submit', async (event) => {
   byId('submit-answers').disabled = true;
   notice();
   try {
-    const job = await api(`/api/runs/${encodeURIComponent(current.run_id)}/answers`, {method: 'POST', body: JSON.stringify({answers})});
+    const job = await api(`/api/runs/${encodeURIComponent(current.run_id)}/answers`, {method: 'POST', body: JSON.stringify({answers, reparse_report: byId('reparse-report').checked})});
     if (token === epoch) selectRun(job.run_id);
   } catch (error) { if (token === epoch) { notice(errorText(error)); byId('submit-answers').disabled = false; } }
 });

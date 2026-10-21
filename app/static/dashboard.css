@@ -4,3 +4,7 @@
 
 /* 재실행 설정과 이력을 기존 결과 화면과 구분한다. */
 select{font:inherit;display:block;width:100%;border:1px solid #cdd6e5;border-radius:8px;padding:10px 12px;background:white;color:#1f2a40;margin-bottom:18px}#replay-form{margin-top:18px}#replay-form button{margin:0 6px 6px 0}.history-heading{margin-top:22px}.replay-history{list-style:none;padding:0}.replay-history li{border-top:1px solid #e0e6ef;padding:12px 0;font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere}
+
+/* 답변 범위 선택은 일반 입력창과 구분해 표시한다. */
+.answer-scope-toggle { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+.answer-scope-toggle input { width: auto; margin: 0; }

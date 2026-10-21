@@ -61,7 +61,8 @@
         <section id="questions-card" class="card" hidden>
           <h2>확인이 필요한 내용</h2>
           <p class="help">답변은 원래 제보와 함께 다음 검사에 사용됩니다. 이전 결과는 보존하고 새 브라우저에서 다시 검사합니다.</p>
-          <form id="answers-form"><div id="questions"></div><button id="submit-answers" type="submit" class="primary">답변 제출하고 다시 검사</button></form>
+          <form id="answers-form"><div id="questions"></div>
+            <label class="answer-scope-toggle"><input id="reparse-report" type="checkbox">초기 조건·입력값·행동 순서도 정정합니다.</label><button id="submit-answers" type="submit" class="primary">답변 제출하고 다시 검사</button></form>
         </section>
         <section id="result-card" class="card" hidden>
           <div class="section-heading"><h2>원래 실행의 검사 결과</h2><span id="verdict" class="badge"></span></div>

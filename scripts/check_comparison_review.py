@@ -74,19 +74,21 @@ class ComparisonReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["plan"].conditions[0].operator, "equals")
 
     async def test_weakened_exact_rejected(self):
-        """정확한 일치 요구를 포함으로 약화한 응답도 거부한다."""
+        """정확한 일치 요구를 약화한 조건은 실행하지 않고 확인을 요청한다."""
         report = "처리 결과 영역의 전체 문자열은 정확히 준비 완료.여야 합니다."
         client = Client([condition(report), review(report, "mismatch")])
-        with self.assertRaises(ValueError):
-            await VerificationPlanner(client, max_attempts=1, max_review_attempts=1).plan(spec(report), report=report)
+        result = await VerificationPlanner(client, max_attempts=1).plan(spec(report), report=report)
+        self.assertEqual(result["plan"].status, "needs_information")
+        self.assertEqual(result["plan"].conditions, [])
         self.assertEqual(len(client.requests), 2)
 
     async def test_unclear_not_accepted(self):
         """비교 의미가 불명확한 응답을 정상 후보로 승인하지 않는다."""
         report = "처리 결과에 준비 완료.라는 문구가 표시돼야 합니다."
         client = Client([condition(report), review(report, "unclear")])
-        with self.assertRaises(ValueError):
-            await VerificationPlanner(client, max_attempts=1, max_review_attempts=1).plan(spec(report), report=report)
+        result = await VerificationPlanner(client, max_attempts=1).plan(spec(report), report=report)
+        self.assertEqual(result["plan"].status, "needs_information")
+        self.assertTrue(result["plan"].questions)
 
     async def test_invented_reference_rejected(self):
         """비교 검토의 근거도 배정한 식별자를 사용해야 한다."""

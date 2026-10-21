@@ -65,7 +65,7 @@ async def get_artifact(run_id: str, artifact_id: str, request: Request):
 @router.post('/{run_id}/answers', status_code=202)
 async def answer_run(run_id: str, payload: AnswersRequest, request: Request):
     """실제 질문에 답변하고 연결된 새 실행을 접수한다."""
-    return call(service(request).answer, run_id, payload.answers)
+    return call(service(request).answer, run_id, payload.answers, payload.reparse_report)
 
 
 @router.get('/{run_id}/events')
