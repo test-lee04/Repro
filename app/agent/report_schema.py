@@ -1,6 +1,7 @@
 """자연어 버그 제보와 추가 답변의 데이터 형식을 정의한다."""
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import (
     BaseModel,
@@ -66,11 +67,30 @@ class MissingInformation(StrictModel):
     question: str = Field(min_length=1)
 
 
+class ReportedPrecondition(StrictModel):
+    """제보자가 밝힌 초기 상태를 행동이나 실제 검증 결과와 구분해 보존한다.
+
+    Attributes:
+        description: 브라우저 조작 전의 상태에 대한 설명.
+        source: 실제 상태를 알려 준 원래 제보 또는 사용자 답변.
+        evidence: 해당 출처에서 그대로 가져온 연속된 근거.
+
+    Notes:
+        이 자료는 사용자가 보고한 조건이며 실제 화면에서 확인한 사실은 아니다.
+        요구사항 문서만 보고 실제 초기 상태를 가정할 수 없다.
+    """
+
+    description: str = Field(min_length=1)
+    source: Literal["report", "user_answer"]
+    evidence: str = Field(min_length=1)
+
+
 class BugSpec(StrictModel):
     """모델이 구조화한 버그 제보.
 
     Attributes:
         summary: 제보 현상 요약.
+        preconditions: 사용자가 명시한 초기 상태. 실제 화면 검증 결과가 아니다.
         reported_steps: 사용자가 언급한 조작 순서.
         inputs: 사용자가 명시한 입력값.
         actual_behavior: 사용자가 보고한 실제 동작.
@@ -86,8 +106,14 @@ class BugSpec(StrictModel):
 
     summary: str = Field(min_length=1)
 
+    preconditions: list[ReportedPrecondition] = Field(
+        default_factory=list,
+        description="제보나 실제 답변에 명시한 초기 상태. 행동 목록과 실제 관찰 결과가 아니다.",
+    )
+
     reported_steps: list[str] = Field(
-        default_factory=list
+        default_factory=list,
+        description="입력, 클릭, 저장, 새로고침 등 실제 조작만 순서대로 기록한다. 이미 주어진 상태 설명은 preconditions에 기록한다.",
     )
 
     inputs: list[ReportedInput] = Field(
@@ -102,6 +128,10 @@ class BugSpec(StrictModel):
     expected_behavior: str | None = Field(
         default=None,
         min_length=1,
+        description=(
+            '원문에 근거해 확정한 정상 기대 동작. 불명확하거나 충돌하면 null이다. '
+            '값을 확정했다면 같은 expected_behavior를 missing_information에 넣지 않는다.'
+        ),
     )
 
     expectation_source: ExpectationSource = (
@@ -154,6 +184,14 @@ class BugSpec(StrictModel):
             ):
                 raise ValueError(
                     "기대 동작에는 내용과 출처 근거가 필요합니다."
+                )
+            if any(item.field == 'expected_behavior' for item in self.missing_information):
+                raise ValueError(
+                    '정상 기대 동작과 근거를 확정하면서 expected_behavior를 '
+                    '정보 부족으로 표시할 수 없습니다. 기대 동작을 알고 있다면 '
+                    '실제로 그렇게 동작하는지는 브라우저에서 확인합니다. '
+                    '기대 자체가 불명확하거나 충돌한다면 expected_behavior와 '
+                    'expectation_evidence를 null, 출처를 unknown으로 두고 질문하세요.'
                 )
 
         return self

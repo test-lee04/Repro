@@ -12,7 +12,7 @@ from app.testing.check_schema import VerificationCondition
 
 
 class StepCoverage(StrictModel):
-    """References to recorded actions that support one reported step."""
+    """제보 단계 하나를 뒷받침하는 실제 행동 번호를 기록한다."""
 
     step_number: StrictInt = Field(ge=1)
     action_numbers: list[StrictInt]
@@ -20,7 +20,7 @@ class StepCoverage(StrictModel):
 
 
 class CheckpointReview(StrictModel):
-    """A model review with references, not proof of internal application state."""
+    """내부 저장 성공과 구분해 실제 행동 근거를 검토한다."""
 
     status: Literal["reached", "inconclusive"]
     coverage: list[StepCoverage]
@@ -29,7 +29,7 @@ class CheckpointReview(StrictModel):
 
     @model_validator(mode="after")
     def validate_status(self):
-        """Require supporting references for a reached decision."""
+        """완료 판정에 필요한 행동 참조를 확인한다."""
         if self.status == "reached":
             if not self.coverage or not self.checkpoint_action_numbers:
                 raise ValueError("검사 시점 확인에는 행동 근거가 필요합니다.")
@@ -37,7 +37,7 @@ class CheckpointReview(StrictModel):
 
 
 class CheckpointValidationError(ValueError):
-    """Preserve failed responses for the workflow artifact."""
+    """검토에 실패한 응답을 실행 기록에 보존한다."""
 
     def __init__(self, message, attempts):
         super().__init__(message)
@@ -45,7 +45,7 @@ class CheckpointValidationError(ValueError):
 
 
 class CheckpointReviewer:
-    """Assess execution coverage without comparing expected and actual values."""
+    """기대값과 실제 값 비교와 별도로 실행 범위를 확인한다."""
 
     def __init__(self, client: JsonModelClient, max_attempts: int = 2):
         if max_attempts < 1:
@@ -55,7 +55,7 @@ class CheckpointReviewer:
 
     @staticmethod
     def validate_references(review, steps, history):
-        """Check coverage, successful action references, and step ordering."""
+        """단계 범위, 성공한 행동 참조와 순서를 검사한다."""
         if review.status != "reached":
             return
 
@@ -88,18 +88,18 @@ class CheckpointReviewer:
     async def review(
         self, spec: BugSpec, condition: VerificationCondition, loop_result: dict
     ) -> dict:
-        """Review the condition checkpoint using real execution history.
+        """실제 행동 기록으로 검증 조건의 확인 시점을 검토한다.
 
         Args:
-            spec: Parsed user report.
-            condition: Condition whose checkpoint needs review.
-            loop_result: Result returned by the existing ReproductionLoop.
+            spec: 구조화된 사용자 제보.
+            condition: 확인 시점을 검토할 조건.
+            loop_result: 기존 행동 반복기가 반환한 결과.
 
         Returns:
-            Review and original model attempts.
+            검토 결과와 실제 모델 호출 기록.
 
         Raises:
-            CheckpointValidationError: Responses fail reference validation.
+            CheckpointValidationError: 행동 참조 검증을 통과하지 못한 경우.
         """
         history = loop_result.get("history", [])
         if loop_result.get("loop_status") != "finish_selected" or not history or not spec.reported_steps:
@@ -111,6 +111,19 @@ class CheckpointReviewer:
                 "attempts": [],
             }
 
+        return await self._review_actions(spec, condition.checkpoint, history)
+
+    async def review_completion(self, spec: BugSpec, history: list[dict]) -> dict:
+        """추가 조작 전에 제보의 행동이 실제 기록으로 완료됐는지 확인한다."""
+        if not history or not spec.reported_steps:
+            return {'review': CheckpointReview(status='inconclusive', coverage=[], checkpoint_action_numbers=[],
+                                               reason='완료를 확인할 제보 단계 또는 실행 기록이 없습니다.'),
+                    'attempts': []}
+        return await self._review_actions(
+            spec, '제보에 명시된 모든 조작을 수행한 직후. 정상 결과를 만들기 위한 추가 조작은 포함하지 않습니다.', history)
+
+    async def _review_actions(self, spec, checkpoint, history):
+        """종료 검토와 최종 검사 시점 검토에서 같은 근거 검증을 재사용한다."""
         actions = []
         for number, item in enumerate(history, 1):
             action = item["action"]
@@ -132,7 +145,7 @@ class CheckpointReviewer:
                 {"step_number": number, "description": step}
                 for number, step in enumerate(spec.reported_steps, 1)
             ],
-            "checkpoint": condition.checkpoint,
+            "checkpoint": checkpoint,
             "actions": actions,
             "output_schema": schema,
         }

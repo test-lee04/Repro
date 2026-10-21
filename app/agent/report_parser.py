@@ -1,5 +1,6 @@
 """제보를 분석하고 실제 원문 대조로 기대 동작의 출처를 확인한다."""
 
+import copy
 import json
 import unicodedata
 from pathlib import Path
@@ -8,6 +9,7 @@ from uuid import uuid4
 
 from app.agent.model_client import JsonModelClient
 from app.agent.prompts import REPORT_PARSER_PROMPT
+from app.agent.question_reviewer import ObservationGate
 from app.agent.report_schema import (
     BugSpec,
     ClarificationAnswer,
@@ -51,6 +53,38 @@ class ReportParser:
         self.client = client
         self.max_attempts = max_attempts
 
+    @staticmethod
+    def generation_schema():
+        """기대 동작의 확정 여부에 따라 질문을 생성할 수 있는 필드를 제한한다.
+
+        Returns:
+            원래 제보 형식을 유지하면서 알려진 기대 동작과 모순된 질문을 막는 생성 형식.
+
+        Notes:
+            특정 서비스의 입력 이름이나 버그 사례를 제한하지 않는다.
+            정보 부족의 분류 필드만 공통 항목으로 표현하고 자세한 내용은 question에 기록한다.
+            모델이 형식을 무시하면 기존 BugSpec 검증이 여전히 응답을 거부한다.
+        """
+        base = BugSpec.model_json_schema()
+        properties = copy.deepcopy(base["properties"])
+        fields = [key for key in BugSpec.model_fields
+                  if key not in {"expected_behavior", "expectation_source", "expectation_evidence", "missing_information"}]
+        fields += ["other"]
+        branches = []
+        for known in (True, False):
+            props = copy.deepcopy(properties)
+            props["expected_behavior"] = {"type": "string", "minLength": 1} if known else {"type": "null"}
+            props["expectation_evidence"] = {"type": "string", "minLength": 1} if known else {"type": "null"}
+            props["expectation_source"] = {"type": "string", "enum":
+                ["report", "public_spec", "user_answer"] if known else ["unknown"]}
+            missing = copy.deepcopy(base["$defs"]["MissingInformation"])
+            missing["properties"]["field"] = {"type": "string", "enum":
+                fields if known else ["expected_behavior", *fields]}
+            props["missing_information"] = {"type": "array", "items": missing}
+            branches.append({"type": "object", "additionalProperties": False,
+                             "properties": props, "required": list(props)})
+        return {"$defs": base["$defs"], "anyOf": branches}
+
     async def parse(
         self,
         report: str,
@@ -81,7 +115,7 @@ class ReportParser:
             raise ValueError("제보가 비어 있습니다.")
 
         answer_history = list(answers or [])
-        schema = BugSpec.model_json_schema()
+        schema = self.generation_schema()
 
         payload = {
             "report": report,
@@ -143,6 +177,13 @@ class ReportParser:
                     public_spec=public_spec,
                     answers=answer_history,
                 )
+
+                self._validate_preconditions(spec, report=report, answers=answer_history)
+
+                if spec.needs_clarification:
+                    gate_record = {}
+                    attempt["question_review"] = gate_record
+                    spec = ObservationGate.apply(spec, gate_record)
 
             except ValueError as error:
                 attempt["validation_error"] = str(error)
@@ -226,9 +267,32 @@ class ReportParser:
                 "source_correction": correction,
                 "evidence_matches": matches,
                 "diagnostic_path": str(diagnostic_path),
+                "question_review": attempt.get("question_review"),
             }
 
         raise RuntimeError("해석 결과를 반환하지 못했습니다.")
+
+    @staticmethod
+    def _validate_preconditions(spec, *, report, answers):
+        """초기 상태의 근거가 실제 제보나 사용자 답변에 있는지 확인한다.
+
+        Args:
+            spec: 초기 상태를 포함한 해석 결과.
+            report: 사용자의 원래 제보.
+            answers: 실제 사용자 답변 기록.
+
+        Raises:
+            ValueError: 지정한 출처에 근거가 없거나 질문만 근거로 사용한 경우.
+
+        Notes:
+            원문 근거 검증이며 실제 브라우저 상태의 확인을 의미하지 않는다.
+        """
+        documents = {"report": [report], "user_answer": [item.answer for item in answers]}
+        for condition in spec.preconditions:
+            evidence = normalize(condition.evidence)
+            if not evidence or not any(evidence in normalize(text)
+                                       for text in documents[condition.source]):
+                raise ValueError("초기 상태의 근거가 지정한 제보 또는 사용자 답변에 없습니다.")
 
     @staticmethod
     def _resolve_evidence(
@@ -384,12 +448,16 @@ class ReportParser:
         Returns:
             모델 정보, 호출 횟수, 토큰 사용량.
         """
-        last_usage = attempts[-1]["usage"]
+        usages = []
+        for attempt in attempts:
+            usages.append(attempt["usage"])
+            usages.extend(item["usage"] for item in attempt.get("question_review", {}).get("attempts", []))
+        last_usage = usages[-1]
 
         def total_tokens(key: str) -> int | None:
             values = [
-                item["usage"].get(key)
-                for item in attempts
+                item.get(key)
+                for item in usages
             ]
 
             if all(type(value) is int for value in values):
@@ -400,7 +468,7 @@ class ReportParser:
         return {
             "backend": last_usage.get("backend"),
             "model": last_usage.get("model"),
-            "model_calls": len(attempts),
+            "model_calls": len(usages),
             "input_tokens": total_tokens("input_tokens"),
             "output_tokens": total_tokens("output_tokens"),
         }

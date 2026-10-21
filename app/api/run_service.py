@@ -11,7 +11,7 @@ from uuid import uuid4
 from app.testing.replay import write_json
 
 
-async def execute_workflow(request, run_id, folder, *, answers=None):
+async def execute_workflow(request, run_id, folder, *, answers=None, model_client=None):
     """기존 재현 흐름을 실행하고 브라우저 환경을 정리한다.
 
     Args:
@@ -19,6 +19,7 @@ async def execute_workflow(request, run_id, folder, *, answers=None):
         run_id: API가 생성한 작업 식별자.
         folder: 작업별 결과 저장 폴더.
         answers: 실제 질문과 사용자 답변의 누적 기록.
+        model_client: 평가에서 호출 계측을 위해 주입할 모델 연결 객체.
 
     Returns:
         기존 실행 흐름의 최종 결과.
@@ -38,7 +39,7 @@ async def execute_workflow(request, run_id, folder, *, answers=None):
     from app.browser.verification import VerificationBrowser
 
     load_dotenv()
-    client = build_model_client()
+    client = model_client if model_client is not None else build_model_client()
     async with PlaywrightSessions(targets={}) as sessions:
         session_id = await sessions.open(run_id=run_id, start_url=str(request.target.start_url))
         workflow = ReproductionWorkflow(

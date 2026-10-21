@@ -50,6 +50,9 @@ async def main(args: argparse.Namespace) -> None:
         print(f"\n분석 회차: {round_index + 1}")
         print(spec.model_dump_json(indent=2))
         print("추가 질문 필요:", spec.needs_clarification)
+        gate = result.get("question_review") or {}
+        print("관찰 단계로 이월한 후보 질문:", len(gate.get("deferred_questions", [])))
+        print("진단 기록:", result.get("diagnostic_path"))
         print("모델 사용량:", result["usage"])
         print("소요 시간:", result["elapsed_seconds"], "초")
 
@@ -58,6 +61,7 @@ async def main(args: argparse.Namespace) -> None:
             "public_spec": args.public_spec,
             "answers": result["answers"],
             "spec": spec.model_dump(mode="json"),
+            "question_review": result.get("question_review"),
             "usage": result["usage"],
             "elapsed_seconds": result["elapsed_seconds"],
         }
@@ -77,7 +81,7 @@ async def main(args: argparse.Namespace) -> None:
         )
 
         if not spec.needs_clarification:
-            print("해석 결과에 추가 질문이 없습니다.")
+            print("현재 사용자 답변을 기다릴 질문이 없습니다. 실제 화면 확인은 아직 수행하지 않았습니다.")
             break
 
         if not args.interactive:

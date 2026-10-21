@@ -84,6 +84,7 @@ class ReproductionLoop:
                         "decision": decision.model_dump(mode="json"),
                         "usage": planned["usage"],
                         "elapsed_seconds": planned["elapsed_seconds"],
+                        "completion_review": planned.get("completion_review"),
                     })
 
                     print(
@@ -156,8 +157,9 @@ class ReproductionLoop:
             result["error"] = {
                 "type": type(error).__name__,
                 "message": str(error),
+                "attempts": getattr(error, "attempts", []),
             }
-            raise
+            # 이미 수행한 행동과 최종 화면을 호출자에게 돌려줘 근거를 보존한다.
 
         finally:
             result["elapsed_seconds"] = round(

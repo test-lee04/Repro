@@ -4,9 +4,14 @@ import copy
 import json
 import time
 import unicodedata
+from typing import Literal
+from pathlib import Path
+from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.agent.model_client import JsonModelClient
-from app.agent.prompts import VERIFICATION_PROMPT
+from app.agent.prompts import VERIFICATION_PROMPT, SCOPE_REVIEW_PROMPT
 from app.agent.report_schema import (
     BugSpec,
     ClarificationAnswer,
@@ -28,6 +33,57 @@ def normalize_text(value: str) -> str:
     return " ".join(normalized.split())
 
 
+class ComparisonReview(BaseModel):
+    """원문에 비춰 기대 문구와 비교 강도가 적절한지 기록한다."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    status: Literal["consistent", "mismatch", "unclear"]
+    evidence_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+class ScopeItem(BaseModel):
+    """검증 조건 하나의 대상 범위 검토 결과를 정의한다."""
+
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    condition_id: str = Field(min_length=1)
+    status: Literal['same_scope', 'mismatch', 'unclear']
+    evidence_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    suggested_target: str | None
+    comparison: ComparisonReview
+
+    @model_validator(mode='after')
+    def validate_suggestion(self):
+        """범위 불일치에만 수정 제안을 허용한다."""
+        if self.status == 'mismatch':
+            if not self.suggested_target or not self.suggested_target.strip():
+                raise ValueError('범위 불일치에는 원문에 근거한 대상 제안이 필요합니다.')
+        elif self.suggested_target is not None:
+            raise ValueError('일치 또는 보류 상태에는 대상 제안을 넣지 않습니다.')
+        return self
+
+
+class ScopeReview(BaseModel):
+    """모든 검증 조건을 한 번씩 검토한 결과다."""
+
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    results: list[ScopeItem] = Field(min_length=1)
+
+
+class ReviewResponseError(RuntimeError):
+    """검토 응답 자체가 잘못돼 조건 재생성을 진행할 수 없음을 나타낸다."""
+
+
+class VerificationPlanningError(ValueError):
+    """실패한 전체 시도와 진단 경로를 호출자에게 보존한다."""
+
+    def __init__(self, message, attempts, diagnostic_path):
+        super().__init__(message)
+        self.attempts = attempts
+        self.diagnostic_path = str(diagnostic_path)
+
+
 class VerificationPlanner:
     """제보별 검증 조건 후보를 생성하고 원문 근거를 검사한다."""
 
@@ -35,23 +91,26 @@ class VerificationPlanner:
         self,
         client: JsonModelClient,
         max_attempts: int = 2,
+        max_review_attempts: int = 2,
     ):
         """모델 연결과 최대 생성 횟수를 설정한다.
 
         Args:
             client: JSON 응답을 생성하는 모델 연결 객체.
-            max_attempts: 첫 생성과 재시도를 합한 최대 호출 횟수.
+            max_attempts: 최초 조건 생성과 조건 재생성을 합한 최대 횟수.
+            max_review_attempts: 조건 하나의 검토 응답 형식 오류를 재시도할 최대 횟수.
 
         Raises:
             ValueError: 최대 생성 횟수가 1보다 작은 경우.
         """
-        if max_attempts < 1:
+        if max_attempts < 1 or max_review_attempts < 1:
             raise ValueError(
                 "최대 생성 횟수는 1 이상이어야 합니다."
             )
 
         self.client = client
         self.max_attempts = max_attempts
+        self.max_review_attempts = max_review_attempts
 
     @staticmethod
     def _build_generation_schema() -> dict:
@@ -83,9 +142,17 @@ class VerificationPlanner:
             "description": (
                 "제보에서 확인할 화면 대상의 설명. "
                 "실제 요소 ID나 selector가 아닌 대상의 역할과 이름. "
-                "URL 검사에서는 현재 페이지를 설명한다."
+                "URL 검사에서는 현재 페이지를 설명한다. "
+                "원문이 영역이나 목록 전체를 지정하면 그 전체를 유지하고 "
+                "임의의 항목이나 존재를 가정한 자식 요소로 좁히지 않는다."
             ),
         }
+
+        condition_schema['properties']['operator']['description'] = (
+            '표시 영역에 문구가 있어야 한다는 text 요구는 contains다. '
+            '전체 문자열 또는 입력값이 정확히 같아야 하는 요구는 equals다. '
+            '원문이 요구한 비교의 강도를 임의로 바꾸지 않는다.'
+        )
 
         required = condition_schema.setdefault(
             "required",
@@ -179,6 +246,7 @@ class VerificationPlanner:
         ]
 
         attempts = []
+        diagnostic_path = Path("artifacts") / "verification-planner" / f"{uuid4().hex}.json"
 
         for attempt_number in range(
             1,
@@ -214,8 +282,11 @@ class VerificationPlanner:
                     public_spec=public_spec,
                     answers=answers,
                 )
+                if plan.status == 'candidate':
+                    await self._review_scope(plan, record)
 
-            except ValueError as error:
+
+            except Exception as error:
                 record["validation_error"] = str(error)
 
                 print(
@@ -224,10 +295,11 @@ class VerificationPlanner:
                     f"{error}"
                 )
 
-                if attempt_number == self.max_attempts:
-                    raise ValueError(
-                        "검증 조건이 형식 또는 원문 근거 검사를 "
-                        f"통과하지 못했습니다: {error}"
+                self._save_diagnostics(diagnostic_path, payload, attempts, "failed_attempt")
+                if attempt_number == self.max_attempts or not isinstance(error, ValueError):
+                    raise VerificationPlanningError(
+                        f"검증 조건 준비에 실패했습니다: {error}. 기록: {diagnostic_path}",
+                        attempts, diagnostic_path,
                     ) from error
 
                 # 실패한 응답과 검사 오류를 함께 전달한다.
@@ -253,7 +325,9 @@ class VerificationPlanner:
 
                 continue
 
+            self._save_diagnostics(diagnostic_path, payload, attempts, "completed")
             return {
+                "diagnostic_path": str(diagnostic_path),
                 "plan": plan,
                 "attempts": attempts,
                 "usage": self._summarize_usage(attempts),
@@ -265,6 +339,98 @@ class VerificationPlanner:
         raise RuntimeError(
             "검증 조건 생성이 정상적으로 종료되지 않았습니다."
         )
+
+    @staticmethod
+    def _save_diagnostics(path, payload, attempts, status):
+        """성공과 실패 모두에서 생성 및 검토의 원래 응답을 저장한다."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"status": status, "input": payload, "attempts": attempts},
+                                   ensure_ascii=False, indent=2), encoding="utf-8")
+
+    async def _review_scope(self, plan, record):
+        """대상 범위와 비교 의미를 검토하고 응답 오류만 같은 단계에서 재시도한다.
+
+        Args:
+            plan: 원문 근거 검사를 통과한 조건 후보.
+            record: 생성 호출과 모든 검토 호출을 보존할 기록.
+
+        Raises:
+            ReviewResponseError: 검토 형식이나 근거 참조를 끝내 확인하지 못한 경우.
+            ValueError: 유효한 검토가 생성 조건의 불일치나 불명확함을 지적한 경우.
+
+        Notes:
+            실제 값은 전달하지 않는다. 근거는 모델이 재작성하지 않고 식별자로 참조한다.
+            형식 오류는 검토기만 재시도하고 조건 의미 오류만 생성기에 돌려보낸다.
+        """
+        conditions = [item for item in plan.conditions if item.kind == "text"]
+        if not conditions:
+            return
+        documents = {f"evidence-{number}": item for number, item in enumerate(conditions, 1)}
+        by_condition = {item.condition_id: key for key, item in documents.items()}
+        schema = ScopeReview.model_json_schema()
+        # 각 조건과 근거를 같은 항목에 묶어 식별자 재선택의 부담을 줄인다.
+        payload = {"conditions": [
+            {"condition_id": item.condition_id, "target_description": item.target_description,
+             "evidence_id": key, "evidence": item.evidence, "kind": item.kind,
+             "operator": item.operator, "expected_value": item.expected_value}
+            for key, item in documents.items()
+        ], "output_schema": schema}
+        schema["$defs"]["ScopeItem"]["properties"]["condition_id"]["enum"] = list(by_condition)
+        for name in ("ScopeItem", "ComparisonReview"):
+            schema["$defs"][name]["properties"]["evidence_id"]["enum"] = list(documents)
+        messages = [
+            {"role": "system", "content": SCOPE_REVIEW_PROMPT},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+        scope_record = {"attempts": [], "review": None, "validation_error": None,
+                        "evidence_catalog": {key: {"condition_id": item.condition_id,
+                                                    "evidence": item.evidence}
+                                             for key, item in documents.items()}}
+        record["scope_review"] = scope_record
+        for number in range(1, self.max_review_attempts + 1):
+            response = await self.client.generate(messages=messages, schema=schema)
+            attempt = {"attempt": number, "content": response["content"],
+                       "usage": response.get("usage") or {}, "validation_error": None}
+            scope_record["attempts"].append(attempt)
+            try:
+                review = ScopeReview.model_validate_json(response["content"])
+                ids = [item.condition_id for item in review.results]
+                if len(ids) != len(by_condition) or set(ids) != set(by_condition):
+                    raise ValueError("모든 조건을 중복 없이 한 번씩 검토해야 합니다.")
+                for item in review.results:
+                    evidence_id = by_condition[item.condition_id]
+                    if item.evidence_id != evidence_id or item.comparison.evidence_id != evidence_id:
+                        raise ValueError(f"조건 {item.condition_id}에 배정한 근거 식별자를 그대로 사용해야 합니다.")
+            except ValueError as error:
+                attempt["validation_error"] = str(error)
+                scope_record["validation_error"] = str(error)
+                if number == self.max_review_attempts:
+                    raise ReviewResponseError("검토 응답의 형식 또는 근거 참조를 확인하지 못했습니다.") from error
+                messages.extend([
+                    {"role": "assistant", "content": response["content"]},
+                    {"role": "user", "content": json.dumps({
+                        "validation_error": str(error),
+                        "instruction": "조건과 근거는 변경하지 말고 검토 응답 전체만 수정하세요.",
+                        "output_schema": schema,
+                    }, ensure_ascii=False)},
+                ])
+                continue
+            scope_record["review"] = review.model_dump(mode="json")
+            scope_record["validation_error"] = None
+            issues = []
+            for item in review.results:
+                if item.status != "same_scope" or item.comparison.status != "consistent":
+                    issues.append({"condition_id": item.condition_id,
+                                   "scope_status": item.status, "reason": item.reason,
+                                   "comparison_status": item.comparison.status,
+                                   "comparison_reason": item.comparison.reason,
+                                   "source_evidence": documents[item.evidence_id].evidence,
+                                   "suggested_target": item.suggested_target})
+            if issues:
+                # 근거 문구는 검증한 원본에서 코드로 복원하며 모델의 제안은 자동 적용하지 않는다.
+                raise ValueError("원문과 검사 범위 또는 비교 조건을 다시 맞추세요. "
+                                 + json.dumps(issues, ensure_ascii=False))
+            return
 
     @staticmethod
     def _validate_targets(
@@ -355,10 +521,11 @@ class VerificationPlanner:
         Returns:
             모델 정보, 호출 횟수와 합산한 토큰 사용량.
         """
-        usages = [
-            attempt["usage"]
-            for attempt in attempts
-        ]
+        usages = []
+        for attempt in attempts:
+            usages.append(attempt['usage'])
+            if attempt.get('scope_review') is not None:
+                usages.extend(item['usage'] for item in attempt['scope_review']['attempts'])
 
         last_usage = usages[-1] if usages else {}
 

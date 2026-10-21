@@ -223,7 +223,7 @@ class TargetBinder:
                         "element_id": element["element_id"],
                         "tag": element.get("tag", ""),
                         "name": element.get("name", ""),
-                        "supports_value": element.get("supports_value") is True,
+                        "readable_kinds": [condition.kind],
                     }
                     for element in eligible
                 ],

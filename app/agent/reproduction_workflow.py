@@ -224,6 +224,8 @@ class ReproductionWorkflow:
         result["phase"] = "actions"
         loop_result = await self.loop.run(spec, session_id, folder)
         result["execution"] = plain(loop_result)
+        if loop_result.get("error"):
+            result["error"] = plain(loop_result["error"])
         if loop_result["loop_status"] != "finish_selected":
             result["workflow_status"] = loop_result["loop_status"]
             if loop_result.get("question"):
