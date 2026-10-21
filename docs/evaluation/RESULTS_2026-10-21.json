@@ -1,0 +1,539 @@
+{
+  "description": "실제 실행 원본의 집계와 기록을 보존한 사본입니다. 개인 로컬 경로는 프로젝트 상대 경로로 정리했습니다.",
+  "report_date": "2026-10-21",
+  "reviewed_head": "229d088c14d9450d762aca66d85776b318a1557b",
+  "records": [
+    {
+      "source": "artifacts/evaluation-50033934d16945b7b4e9b60b33e9b353/evaluation.json",
+      "source_sha256": "3c1b04239bcc64672aa74366f10f48b8f9da22fb85bb9ff95230e63521a592cc",
+      "manifest": {
+        "dataset_version": "r8-1-v1",
+        "dataset_fingerprint": "5953d37085a45786d2a8a68c56c5e9cec02b1a47baab0c8d5b59a5803e28adff",
+        "created_at": "2026-10-21T08:17:09.053010+00:00",
+        "status": "completed",
+        "agent_code_fingerprint": "52ba8739045e3e18c7e18be2ff621a6cb05c56cf86ef6801cb8894b8d885ed25",
+        "python_version": "3.11.15",
+        "planned_trials": 7,
+        "selected_cases": [
+          "note",
+          "search",
+          "validation",
+          "unclear"
+        ],
+        "repeats": 1,
+        "verify_tests": true,
+        "rows": [
+          {
+            "trial_id": "3f44f3cd77584033aee634e495bb92fa",
+            "case_id": "note",
+            "variant": "buggy",
+            "repeat": 1,
+            "expected_status": "reproduced",
+            "actual_status": "reproduced",
+            "artifact_dir": "artifacts/evaluation-50033934d16945b7b4e9b60b33e9b353/3f44f3cd77584033aee634e495bb92fa",
+            "error": null,
+            "verification_attempted": true,
+            "verification_seconds": 7.48,
+            "evaluation_mode": "without_confirmation",
+            "elapsed_seconds": 111.69,
+            "workflow_status": "conditions_checked",
+            "action_attempts": 3,
+            "successful_actions": 3,
+            "test_generated": true,
+            "test_status": "validated",
+            "usage": {
+              "model_calls": 11,
+              "model_errors": 0,
+              "input_tokens": 22638,
+              "input_tokens_known_subtotal": 22638,
+              "input_tokens_known_calls": 11,
+              "output_tokens": 1825,
+              "output_tokens_known_subtotal": 1825,
+              "output_tokens_known_calls": 11,
+              "models": [
+                "qwen3:8b"
+              ],
+              "backends": [
+                "ollama"
+              ]
+            }
+          },
+          {
+            "trial_id": "24d789e53e6449ca835ab9243bb06d77",
+            "case_id": "note",
+            "variant": "fixed",
+            "repeat": 1,
+            "expected_status": "not_reproduced",
+            "actual_status": "not_reproduced",
+            "artifact_dir": "artifacts/evaluation-50033934d16945b7b4e9b60b33e9b353/24d789e53e6449ca835ab9243bb06d77",
+            "error": null,
+            "verification_attempted": false,
+            "verification_seconds": null,
+            "evaluation_mode": "without_confirmation",
+            "elapsed_seconds": 101.17,
+            "workflow_status": "conditions_checked",
+            "action_attempts": 3,
+            "successful_actions": 3,
+            "test_generated": true,
+            "test_status": "generated",
+            "usage": {
+              "model_calls": 11,
+              "model_errors": 0,
+              "input_tokens": 22662,
+              "input_tokens_known_subtotal": 22662,
+              "input_tokens_known_calls": 11,
+              "output_tokens": 1845,
+              "output_tokens_known_subtotal": 1845,
+              "output_tokens_known_calls": 11,
+              "models": [
+                "qwen3:8b"
+              ],
+              "backends": [
+                "ollama"
+              ]
+            }
+          },
+          {
+            "trial_id": "b46fe1dc3b8c49e5a73d5e90f31ab056",
+            "case_id": "search",
+            "variant": "buggy",
+            "repeat": 1,
+            "expected_status": "reproduced",
+            "actual_status": "reproduced",
+            "artifact_dir": "artifacts/evaluation-50033934d16945b7b4e9b60b33e9b353/b46fe1dc3b8c49e5a73d5e90f31ab056",
+            "error": null,
+            "verification_attempted": true,
+            "verification_seconds": 3.76,
+            "evaluation_mode": "without_confirmation",
+            "elapsed_seconds": 76.81,
+            "workflow_status": "conditions_checked",
+            "action_attempts": 2,
+            "successful_actions": 2,
+            "test_generated": true,
+            "test_status": "validated",
+            "usage": {
+              "model_calls": 9,
+              "model_errors": 0,
+              "input_tokens": 17762,
+              "input_tokens_known_subtotal": 17762,
+              "input_tokens_known_calls": 9,
+              "output_tokens": 1258,
+              "output_tokens_known_subtotal": 1258,
+              "output_tokens_known_calls": 9,
+              "models": [
+                "qwen3:8b"
+              ],
+              "backends": [
+                "ollama"
+              ]
+            }
+          },
+          {
+            "trial_id": "019a677545ee4de4be65f4612b5667e4",
+            "case_id": "search",
+            "variant": "fixed",
+            "repeat": 1,
+            "expected_status": "not_reproduced",
+            "actual_status": "not_reproduced",
+            "artifact_dir": "artifacts/evaluation-50033934d16945b7b4e9b60b33e9b353/019a677545ee4de4be65f4612b5667e4",
+            "error": null,
+            "verification_attempted": false,
+            "verification_seconds": null,
+            "evaluation_mode": "without_confirmation",
+            "elapsed_seconds": 68.47,
+            "workflow_status": "conditions_checked",
+            "action_attempts": 2,
+            "successful_actions": 2,
+            "test_generated": true,
+            "test_status": "generated",
+            "usage": {
+              "model_calls": 9,
+              "model_errors": 0,
+              "input_tokens": 17738,
+              "input_tokens_known_subtotal": 17738,
+              "input_tokens_known_calls": 9,
+              "output_tokens": 1256,
+              "output_tokens_known_subtotal": 1256,
+              "output_tokens_known_calls": 9,
+              "models": [
+                "qwen3:8b"
+              ],
+              "backends": [
+                "ollama"
+              ]
+            }
+          },
+          {
+            "trial_id": "14812399b0d848d0b624129dfaf46f52",
+            "case_id": "validation",
+            "variant": "buggy",
+            "repeat": 1,
+            "expected_status": "reproduced",
+            "actual_status": "needs_information",
+            "artifact_dir": "artifacts/evaluation-50033934d16945b7b4e9b60b33e9b353/14812399b0d848d0b624129dfaf46f52",
+            "error": null,
+            "verification_attempted": false,
+            "verification_seconds": null,
+            "evaluation_mode": "without_confirmation",
+            "elapsed_seconds": 61.67,
+            "workflow_status": "needs_information",
+            "action_attempts": 0,
+            "successful_actions": 0,
+            "test_generated": false,
+            "test_status": "not_generated",
+            "usage": {
+              "model_calls": 5,
+              "model_errors": 0,
+              "input_tokens": 12513,
+              "input_tokens_known_subtotal": 12513,
+              "input_tokens_known_calls": 5,
+              "output_tokens": 1098,
+              "output_tokens_known_subtotal": 1098,
+              "output_tokens_known_calls": 5,
+              "models": [
+                "qwen3:8b"
+              ],
+              "backends": [
+                "ollama"
+              ]
+            }
+          },
+          {
+            "trial_id": "a4804ae854334694a6ddd26edebd2b9d",
+            "case_id": "validation",
+            "variant": "fixed",
+            "repeat": 1,
+            "expected_status": "not_reproduced",
+            "actual_status": "needs_information",
+            "artifact_dir": "artifacts/evaluation-50033934d16945b7b4e9b60b33e9b353/a4804ae854334694a6ddd26edebd2b9d",
+            "error": null,
+            "verification_attempted": false,
+            "verification_seconds": null,
+            "evaluation_mode": "without_confirmation",
+            "elapsed_seconds": 58.04,
+            "workflow_status": "needs_information",
+            "action_attempts": 0,
+            "successful_actions": 0,
+            "test_generated": false,
+            "test_status": "not_generated",
+            "usage": {
+              "model_calls": 5,
+              "model_errors": 0,
+              "input_tokens": 12513,
+              "input_tokens_known_subtotal": 12513,
+              "input_tokens_known_calls": 5,
+              "output_tokens": 1098,
+              "output_tokens_known_subtotal": 1098,
+              "output_tokens_known_calls": 5,
+              "models": [
+                "qwen3:8b"
+              ],
+              "backends": [
+                "ollama"
+              ]
+            }
+          },
+          {
+            "trial_id": "6054a4b03f5e45bcb6fe046d6450cfb9",
+            "case_id": "unclear",
+            "variant": "buggy",
+            "repeat": 1,
+            "expected_status": "needs_information",
+            "actual_status": "needs_information",
+            "artifact_dir": "artifacts/evaluation-50033934d16945b7b4e9b60b33e9b353/6054a4b03f5e45bcb6fe046d6450cfb9",
+            "error": null,
+            "verification_attempted": false,
+            "verification_seconds": null,
+            "evaluation_mode": "without_confirmation",
+            "elapsed_seconds": 13.36,
+            "workflow_status": "needs_information",
+            "action_attempts": 0,
+            "successful_actions": 0,
+            "test_generated": false,
+            "test_status": "not_generated",
+            "usage": {
+              "model_calls": 1,
+              "model_errors": 0,
+              "input_tokens": 3053,
+              "input_tokens_known_subtotal": 3053,
+              "input_tokens_known_calls": 1,
+              "output_tokens": 219,
+              "output_tokens_known_subtotal": 219,
+              "output_tokens_known_calls": 1,
+              "models": [
+                "qwen3:8b"
+              ],
+              "backends": [
+                "ollama"
+              ]
+            }
+          }
+        ],
+        "evaluation_mode": "without_confirmation",
+        "timing_scope": "full_agent_trial",
+        "confirmation": null
+      },
+      "summary": {
+        "attempted": 7,
+        "planned": 7,
+        "evaluation_mode": "without_confirmation",
+        "timing_scope": "full_agent_trial",
+        "evaluation_status": "completed",
+        "exact_match": {
+          "count": 5,
+          "total": 7,
+          "percent": 71.43
+        },
+        "bug_detection": {
+          "count": 2,
+          "total": 3,
+          "percent": 66.67
+        },
+        "normal_confirmation": {
+          "count": 2,
+          "total": 3,
+          "percent": 66.67
+        },
+        "false_positive": {
+          "count": 0,
+          "total": 3,
+          "percent": 0.0
+        },
+        "clarification": {
+          "count": 1,
+          "total": 1,
+          "percent": 100.0
+        },
+        "resolved_binary": {
+          "count": 4,
+          "total": 6,
+          "percent": 66.67
+        },
+        "test_generation": {
+          "count": 4,
+          "total": 6,
+          "percent": 66.67
+        },
+        "fix_validation": {
+          "count": 2,
+          "total": 2,
+          "percent": 100.0
+        },
+        "status_counts": {
+          "reproduced": 2,
+          "not_reproduced": 2,
+          "needs_information": 3
+        },
+        "mean_seconds": 70.17,
+        "median_seconds": 68.47,
+        "model_calls": 51,
+        "model_errors": 0,
+        "models": [
+          "qwen3:8b"
+        ],
+        "backends": [
+          "ollama"
+        ],
+        "input_tokens_known_subtotal": 108879,
+        "input_tokens_known_calls": 51,
+        "input_tokens": 108879,
+        "output_tokens_known_subtotal": 8599,
+        "output_tokens_known_calls": 51,
+        "output_tokens": 8599,
+        "by_case": {
+          "note": {
+            "count": 2,
+            "total": 2,
+            "percent": 100.0
+          },
+          "search": {
+            "count": 2,
+            "total": 2,
+            "percent": 100.0
+          },
+          "unclear": {
+            "count": 1,
+            "total": 1,
+            "percent": 100.0
+          },
+          "validation": {
+            "count": 0,
+            "total": 2,
+            "percent": 0.0
+          }
+        }
+      }
+    },
+    {
+      "source": "artifacts/evaluation-0f6cf662897947379a118527e3541d35/evaluation.json",
+      "source_sha256": "2510b7c402366876aa47aeeefb72cc21a7fe4f0cb64f3aaf99986ba0d115f2d3",
+      "manifest": {
+        "dataset_version": "r8-1-v1",
+        "dataset_fingerprint": "5953d37085a45786d2a8a68c56c5e9cec02b1a47baab0c8d5b59a5803e28adff",
+        "created_at": "2026-10-21T08:12:29.679902+00:00",
+        "status": "completed",
+        "agent_code_fingerprint": "52ba8739045e3e18c7e18be2ff621a6cb05c56cf86ef6801cb8894b8d885ed25",
+        "python_version": "3.11.15",
+        "planned_trials": 2,
+        "selected_cases": [
+          "validation"
+        ],
+        "repeats": 1,
+        "verify_tests": true,
+        "rows": [
+          {
+            "trial_id": "fca0da3d24564c709f6b780bf0514e8c",
+            "case_id": "validation",
+            "variant": "buggy",
+            "repeat": 1,
+            "expected_status": "reproduced",
+            "actual_status": "reproduced",
+            "artifact_dir": "artifacts/evaluation-0f6cf662897947379a118527e3541d35/fca0da3d24564c709f6b780bf0514e8c",
+            "error": null,
+            "verification_attempted": true,
+            "verification_seconds": 3.92,
+            "evaluation_mode": "with_confirmation",
+            "elapsed_seconds": 65.84,
+            "workflow_status": "conditions_checked",
+            "action_attempts": 1,
+            "successful_actions": 1,
+            "test_generated": true,
+            "test_status": "validated",
+            "usage": {
+              "model_calls": 7,
+              "model_errors": 0,
+              "input_tokens": 12093,
+              "input_tokens_known_subtotal": 12093,
+              "input_tokens_known_calls": 7,
+              "output_tokens": 936,
+              "output_tokens_known_subtotal": 936,
+              "output_tokens_known_calls": 7,
+              "models": [
+                "qwen3:8b"
+              ],
+              "backends": [
+                "ollama"
+              ]
+            }
+          },
+          {
+            "trial_id": "4ccac09e5fd54250bac542543ae6c4cf",
+            "case_id": "validation",
+            "variant": "fixed",
+            "repeat": 1,
+            "expected_status": "not_reproduced",
+            "actual_status": "not_reproduced",
+            "artifact_dir": "artifacts/evaluation-0f6cf662897947379a118527e3541d35/4ccac09e5fd54250bac542543ae6c4cf",
+            "error": null,
+            "verification_attempted": false,
+            "verification_seconds": null,
+            "evaluation_mode": "with_confirmation",
+            "elapsed_seconds": 48.37,
+            "workflow_status": "conditions_checked",
+            "action_attempts": 1,
+            "successful_actions": 1,
+            "test_generated": true,
+            "test_status": "generated",
+            "usage": {
+              "model_calls": 7,
+              "model_errors": 0,
+              "input_tokens": 12064,
+              "input_tokens_known_subtotal": 12064,
+              "input_tokens_known_calls": 7,
+              "output_tokens": 933,
+              "output_tokens_known_subtotal": 933,
+              "output_tokens_known_calls": 7,
+              "models": [
+                "qwen3:8b"
+              ],
+              "backends": [
+                "ollama"
+              ]
+            }
+          }
+        ],
+        "evaluation_mode": "with_confirmation",
+        "timing_scope": "after_saved_confirmation",
+        "confirmation": {
+          "path": "artifacts/verification-plan-a2fbdfc27b3140faac2ca21b59dec772/verification_plan.json",
+          "fingerprint": "a55fd2b2b3b4927728e573bd62d2e9c088198d74367c021e478d66867b50c807",
+          "answer_count": 1
+        }
+      },
+      "summary": {
+        "attempted": 2,
+        "planned": 2,
+        "evaluation_mode": "with_confirmation",
+        "timing_scope": "after_saved_confirmation",
+        "evaluation_status": "completed",
+        "exact_match": {
+          "count": 2,
+          "total": 2,
+          "percent": 100.0
+        },
+        "bug_detection": {
+          "count": 1,
+          "total": 1,
+          "percent": 100.0
+        },
+        "normal_confirmation": {
+          "count": 1,
+          "total": 1,
+          "percent": 100.0
+        },
+        "false_positive": {
+          "count": 0,
+          "total": 1,
+          "percent": 0.0
+        },
+        "clarification": {
+          "count": 0,
+          "total": 0,
+          "percent": null
+        },
+        "resolved_binary": {
+          "count": 2,
+          "total": 2,
+          "percent": 100.0
+        },
+        "test_generation": {
+          "count": 2,
+          "total": 2,
+          "percent": 100.0
+        },
+        "fix_validation": {
+          "count": 1,
+          "total": 1,
+          "percent": 100.0
+        },
+        "status_counts": {
+          "reproduced": 1,
+          "not_reproduced": 1
+        },
+        "mean_seconds": 57.11,
+        "median_seconds": 57.11,
+        "model_calls": 14,
+        "model_errors": 0,
+        "models": [
+          "qwen3:8b"
+        ],
+        "backends": [
+          "ollama"
+        ],
+        "input_tokens_known_subtotal": 24157,
+        "input_tokens_known_calls": 14,
+        "input_tokens": 24157,
+        "output_tokens_known_subtotal": 1869,
+        "output_tokens_known_calls": 14,
+        "output_tokens": 1869,
+        "by_case": {
+          "validation": {
+            "count": 2,
+            "total": 2,
+            "percent": 100.0
+          }
+        }
+      }
+    }
+  ]
+}
