@@ -15,16 +15,18 @@ from app.agent.checkpoint_reviewer import (
 )
 from app.agent.report_schema import BugSpec
 from app.agent.reproduction_workflow import ReproductionWorkflow
+from app.agent.reproduction_assessor import ReproductionAssessor
 from app.agent.target_binder import TargetBinding
 from app.agent.verification_schema import VerificationPlan
 from app.testing.check_schema import VerificationCondition
 
 
 def fixture_spec():
-    """Return data for tests only, never a runtime topic registry."""
+    """검사에만 사용하는 자료이며 실제 서비스의 분기 목록이 아니다."""
     return BugSpec(
         summary="저장한 제목이 유지되지 않습니다.",
         reported_steps=["제목 입력", "저장", "새로고침"],
+        actual_behavior="제목이 비어 있습니다.",
         expected_behavior="제목은 주간 계획이어야 합니다.",
         expectation_source="report", expectation_evidence="제목은 주간 계획이어야 합니다.",
     )
@@ -49,16 +51,18 @@ def fixture_review(status="reached"):
 
 
 class FixtureComponents:
-    """Injectable component doubles used only in these tests."""
+    """실행 흐름의 연결 규칙을 확인하기 위한 구성 요소 대역."""
 
     def __init__(self, actual="", loop_status="finish_selected", reached=True,
-                 binding_status="bound", read_status="ready", delay=0):
+                 binding_status="bound", read_status="ready", delay=0, assessment_status="inconclusive"):
         self.actual, self.loop_status, self.reached = actual, loop_status, reached
         self.binding_status, self.read_status, self.delay = binding_status, read_status, delay
         self.read_calls = 0
         self.bind_calls = 0
         self.parse_calls = 0
         self.needs_information = False
+        self.assessment_status = assessment_status
+        self.assess_calls = 0
 
     async def parse(self, **kwargs):
         self.parse_calls += 1
@@ -83,7 +87,9 @@ class FixtureComponents:
         return {"review": fixture_review("reached" if self.reached else "inconclusive")}
 
     async def observe(self, session_id):
-        return {"observation_id": "o1", "elements": []}
+        return {"observation_id": "o1", "elements": [
+            {"element_id": "e1", "name": "문서 제목", "value": self.actual},
+        ]}
 
     async def bind(self, condition, observation):
         self.bind_calls += 1
@@ -100,27 +106,40 @@ class FixtureComponents:
                 "kind": kind, "status": self.read_status, "actual_value": self.actual}
 
 
+    async def assess(self, run):
+        """자동 호출과 결과 전달을 검사하기 위한 판정 대역이다."""
+        self.assess_calls += 1
+        return {"status": self.assessment_status, "reason": "검사용 판정 결과",
+                "comparisons": [], "symptom_review": None, "attempts": []}
+
+
 class WorkflowTests(unittest.IsolatedAsyncioTestCase):
-    async def execute(self, components, timeout=1):
+    async def execute(self, components, timeout=1, assessor=None):
         with tempfile.TemporaryDirectory() as folder:
             workflow = ReproductionWorkflow(
                 components, components, components, components, components, components,
-                timeout_seconds=timeout,
+                timeout_seconds=timeout, assessor=assessor if assessor is not None else components,
             )
             result = await workflow.run(report="검사용 제보", session_id="test", artifact_dir=folder)
             saved = json.loads((Path(folder) / "workflow_result.json").read_text())
             self.assertEqual(saved["workflow_status"], result["workflow_status"])
-            self.assertEqual(result["reproduction_status"], "pending")
+            assessment = json.loads((Path(folder) / "assessment.json").read_text())
+            self.assertNotEqual(result["reproduction_status"], "pending")
+            self.assertEqual(saved["reproduction_status"], result["reproduction_status"])
+            self.assertEqual(assessment, saved["assessment"])
+            self.assertEqual(assessment["status"], result["reproduction_status"])
             return result
 
     async def test_mismatch(self):
-        """Confirmed checkpoint plus a real mismatch stays a condition result."""
-        result = await self.execute(FixtureComponents(actual=""))
+        """조건 비교 결과와 최종 재현 판정이 구분돼 전달되는지 확인한다."""
+        result = await self.execute(FixtureComponents(actual="", assessment_status="reproduced"))
         self.assertEqual(result["verification_status"], "unsatisfied")
+        self.assertEqual(result["reproduction_status"], "reproduced")
 
     async def test_match(self):
-        result = await self.execute(FixtureComponents(actual="주간 계획"))
+        result = await self.execute(FixtureComponents(actual="주간 계획", assessment_status="not_reproduced"))
         self.assertEqual(result["verification_status"], "satisfied")
+        self.assertEqual(result["reproduction_status"], "not_reproduced")
 
     async def test_finish_alone_is_not_checkpoint(self):
         components = FixtureComponents(reached=False)
@@ -135,6 +154,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                 result = await self.execute(components)
                 self.assertEqual(result["workflow_status"], status)
                 self.assertEqual(components.bind_calls, 0)
+                self.assertEqual(components.assess_calls, 0)
 
     async def test_missing_target(self):
         components = FixtureComponents(binding_status="not_observed")
@@ -152,10 +172,84 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         result = await self.execute(components)
         self.assertEqual(result["workflow_status"], "needs_information")
         self.assertTrue(result["questions"])
+        self.assertEqual(result["reproduction_status"], "needs_information")
 
     async def test_global_timeout(self):
         result = await self.execute(FixtureComponents(delay=1), timeout=0.01)
         self.assertEqual(result["workflow_status"], "time_limit")
+
+
+    async def test_real_assessor_with_mocked_model(self):
+        """실제 판정기에 모델 대역을 연결해 정상과 버그 결과를 확인한다."""
+        for actual, match, expected in [
+            ("", "matched", "reproduced"),
+            ("주간 계획", "not_matched", "not_reproduced"),
+        ]:
+            with self.subTest(expected=expected):
+                class Client:
+                    async def generate(self, messages, schema):
+                        return {"content": json.dumps({
+                            "match": match,
+                            "evidence": [{"condition_id": "title", "observed_value": actual}],
+                            "reason": "제보 현상과 관찰값을 대조했습니다.",
+                        }, ensure_ascii=False), "usage": {}}
+                result = await self.execute(
+                    FixtureComponents(actual=actual), assessor=ReproductionAssessor(Client())
+                )
+                self.assertEqual(result["reproduction_status"], expected)
+                self.assertEqual(result["assessment_status"], "completed")
+
+    async def test_pending_assessment_rejected(self):
+        """최종 판정기가 미완료 상태를 반환하면 보류로 저장한다."""
+        result = await self.execute(FixtureComponents(assessment_status="pending"))
+        self.assertEqual(result["reproduction_status"], "inconclusive")
+        self.assertEqual(result["assessment_status"], "not_completed")
+
+    async def test_assessment_error(self):
+        """최종 모델 오류가 재현 성공으로 남지 않는지 확인한다."""
+        class BrokenAssessor:
+            async def assess(self, run):
+                raise RuntimeError("검사용 모델 오류")
+        result = await self.execute(FixtureComponents(), assessor=BrokenAssessor())
+        self.assertEqual(result["reproduction_status"], "inconclusive")
+        self.assertEqual(result["phase"], "assessment")
+        self.assertEqual(result["workflow_status"], "error")
+
+    async def test_assessment_timeout(self):
+        """최종 판정도 전체 실행 제한 시간에 포함한다."""
+        class SlowAssessor:
+            async def assess(self, run):
+                await asyncio.sleep(1)
+        result = await self.execute(FixtureComponents(), timeout=0.02, assessor=SlowAssessor())
+        self.assertEqual(result["workflow_status"], "time_limit")
+        self.assertEqual(result["phase"], "assessment")
+        self.assertEqual(result["reproduction_status"], "inconclusive")
+
+    async def test_cancellation_saves_final_status(self):
+        """취소 예외를 유지하면서 일관된 최종 기록을 저장한다."""
+        started = asyncio.Event()
+        class SlowAssessor:
+            async def assess(self, run):
+                started.set()
+                await asyncio.sleep(10)
+        components = FixtureComponents()
+        with tempfile.TemporaryDirectory() as folder:
+            workflow = ReproductionWorkflow(
+                components, components, components, components, components, components,
+                assessor=SlowAssessor(),
+            )
+            task = asyncio.create_task(workflow.run(
+                report="검사용 제보", session_id="test", artifact_dir=folder
+            ))
+            await asyncio.wait_for(started.wait(), 1)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            saved = json.loads((Path(folder) / "workflow_result.json").read_text())
+            assessment = json.loads((Path(folder) / "assessment.json").read_text())
+            self.assertEqual(saved["workflow_status"], "cancelled")
+            self.assertEqual(saved["reproduction_status"], "inconclusive")
+            self.assertEqual(saved["assessment"], assessment)
 
 
 class CheckpointTests(unittest.TestCase):
@@ -254,7 +348,7 @@ class ReviewerContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 def start_demo(version):
-    """Serve a local fixture. Its version is never passed to any agent."""
+    """검사용 서버를 실행하며 데모 버전은 Agent에 전달하지 않는다."""
     save = "localStorage.setItem('saved_title', titleInput.value);" if version == "fixed" else ""
     html = '''<!doctype html><html lang="ko"><body>
         <label>문서 제목<input id="titleInput"></label>
@@ -286,7 +380,7 @@ def start_demo(version):
 
 
 async def live(args):
-    """Run on a supplied URL or an isolated fixture using the same workflow."""
+    """입력한 URL 또는 검사용 화면에서 동일한 실행 흐름을 사용한다."""
     from dotenv import load_dotenv
     from app.agent.action_planner import ActionPlanner
     from app.agent.model_client import build_model_client
@@ -315,6 +409,7 @@ async def live(args):
                 ReproductionLoop(ActionPlanner(client), PlaywrightTools(sessions, folder)),
                 CheckpointReviewer(client), TargetBinder(client, diagnostic_dir=folder),
                 VerificationBrowser(sessions, folder), timeout_seconds=args.timeout,
+                assessor=ReproductionAssessor(client),
             )
             result = await workflow.run(
                 report=args.report, public_spec=args.public_spec,
@@ -322,6 +417,8 @@ async def live(args):
             )
         print("실행 종료 상태:", result["workflow_status"])
         print("조건 검증 결과:", result["verification_status"])
+        print("최종 재현 상태:", result["reproduction_status"])
+        print("판정 이유:", result["assessment"]["reason"])
         for check in result["checks"]:
             print(json.dumps(check, ensure_ascii=False, indent=2))
         if result["questions"]:
@@ -330,13 +427,15 @@ async def live(args):
             print("오류:", json.dumps(result["error"], ensure_ascii=False, indent=2))
         print("총 소요 시간:", result["elapsed_seconds"], "초")
         print("저장 위치:", folder)
-        print("조건 검증 결과이며 전체 버그 재현 판정은 아직 pending입니다.")
+        print("실행 결과와 최종 판정 근거를 함께 저장했습니다.")
         if args.demo:
             # 데모의 정답은 검사 스크립트만 알고 있으며 실행 흐름에 전달하지 않는다.
             expected_status = "unsatisfied" if args.demo == "buggy" else "satisfied"
             assert result["workflow_status"] == "conditions_checked", "조건 검사까지 도달하지 못했습니다."
             assert result["verification_status"] == expected_status, "데모의 예상 조건 결과와 다릅니다."
-            print("PASS: 데모의 행동 실행과 조건 검증 결과")
+            expected_reproduction = "reproduced" if args.demo == "buggy" else "not_reproduced"
+            assert result["reproduction_status"] == expected_reproduction, "데모의 최종 재현 상태가 예상과 다릅니다."
+            print("PASS: 제보부터 행동 실행과 최종 재현 판정까지 자동 연결")
     finally:
         if server is not None:
             server.shutdown()
