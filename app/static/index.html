@@ -64,12 +64,27 @@
           <form id="answers-form"><div id="questions"></div><button id="submit-answers" type="submit" class="primary">답변 제출하고 다시 검사</button></form>
         </section>
         <section id="result-card" class="card" hidden>
-          <div class="section-heading"><h2>검사 결과</h2><span id="verdict" class="badge"></span></div>
+          <div class="section-heading"><h2>원래 실행의 검사 결과</h2><span id="verdict" class="badge"></span></div>
           <p id="verdict-reason"></p>
           <div id="comparison-list" class="comparison-list"></div>
           <div class="test-state"><h3>회귀 테스트</h3><p id="test-status"></p><p id="test-reason" class="help"></p></div>
           <details><summary>실행한 행동</summary><ol id="action-list"></ol></details>
           <details><summary>전체 결과 보기</summary><pre id="raw-result"></pre></details>
+        </section>
+        <section id="replay-card" class="card" hidden>
+          <div class="section-heading"><h2>회귀 테스트 재실행</h2><span id="replay-state" class="badge" role="status" aria-live="polite">실행 전</span></div>
+          <p class="help">위 작업에서 생성한 동일한 테스트를 사용합니다. 원래 환경의 조건 실패 후 수정 환경에서 통과하면 수정 검증 완료로 표시합니다.</p>
+          <form id="replay-form">
+            <label for="replay-url">재실행 대상 URL</label>
+            <input id="replay-url" type="url" required placeholder="https://">
+            <label for="replay-purpose">재실행 환경 역할</label>
+            <select id="replay-purpose"><option value="original">원래 환경 — 문제 탐지 확인</option><option value="fix">수정 환경 — 수정 결과 확인</option></select>
+            <button id="submit-replay" type="submit" class="primary">동일한 테스트 재실행</button>
+            <button id="cancel-replay" type="button" class="danger" disabled>재실행 취소</button>
+          </form>
+          <p id="replay-description" class="help">재실행에는 AI를 호출하지 않습니다. 원래 제보의 판정은 유지됩니다.</p>
+          <h3 class="history-heading">재실행 이력</h3>
+          <ul id="replay-history" class="replay-history"></ul>
         </section>
         <section id="files-card" class="card" hidden>
           <h2>증거와 결과 파일</h2>

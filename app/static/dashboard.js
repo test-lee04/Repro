@@ -24,6 +24,10 @@ let timer = null;
 let current = null;
 let renderedQuestions = '';
 let questionInputs = new Map();
+let replayTimer = null;
+let replayRequest = null;
+let activeReplay = null;
+let replayEpoch = 0;
 
 function notice(message = '') {
   byId('notice').textContent = message;
@@ -156,6 +160,7 @@ function renderResult(result) {
     list.append(card);
   }
   const generation = result.test_generation || {};
+  byId('replay-card').hidden = generation.generation_status !== 'completed' || !generation.case_path;
   byId('test-status').textContent = testNames[generation.test_status] || '테스트 상태 정보 없음';
   byId('test-reason').textContent = generation.reason || '이번 실행의 테스트 생성 기록이 없습니다.';
   const actions = byId('action-list');
@@ -212,6 +217,7 @@ async function pollRun(runId, token) {
       if (token !== epoch) return;
       renderResult(result);
     }
+    if (token === epoch && job.status === 'completed') await loadReplays(runId, token);
     try {
       const files = await api(job.artifacts_url);
       if (token === epoch) renderFiles(files);
@@ -226,6 +232,12 @@ async function pollRun(runId, token) {
 }
 
 function selectRun(runId) {
+  replayEpoch += 1;
+  clearTimeout(replayTimer);
+  activeReplay = null;
+  replayRequest = null;
+  byId('submit-replay').disabled = false;
+  byId('cancel-replay').disabled = true;
   epoch += 1;
   clearTimeout(timer);
   controller.abort();
@@ -233,7 +245,7 @@ function selectRun(runId) {
   current = {run_id: runId};
   renderedQuestions = '';
   notice();
-  for (const id of ['result-card', 'files-card', 'questions-card']) byId(id).hidden = true;
+  for (const id of ['result-card', 'files-card', 'questions-card', 'replay-card']) byId(id).hidden = true;
   byId('job-details').hidden = false;
   byId('current-id').value = runId;
   byId('cancel-job').disabled = true;
@@ -288,6 +300,118 @@ byId('answers-form').addEventListener('submit', async (event) => {
     const job = await api(`/api/runs/${encodeURIComponent(current.run_id)}/answers`, {method: 'POST', body: JSON.stringify({answers})});
     if (token === epoch) selectRun(job.run_id);
   } catch (error) { if (token === epoch) { notice(errorText(error)); byId('submit-answers').disabled = false; } }
+});
+
+/* 재실행 접수 상태와 실제 테스트 결과를 별도로 표시한다. */
+const replayNames = {passed: '조건 통과', assertion_failed: '조건 실패 확인', replay_error: '실행 오류'};
+
+function renderReplays(records) {
+  const list = byId('replay-history');
+  list.replaceChildren();
+  for (const record of records) {
+    const line = document.createElement('li');
+    const result = record.result?.replay;
+    const role = record.request.purpose === 'original' ? '원래 환경' : '수정 환경';
+    const outcome = result ? replayNames[result.status] || result.status : statusNames[record.status] || record.status;
+    const error = record.error?.message || result?.error?.message;
+    line.textContent = `${role} / ${outcome}\n${record.request.target_url}\n${record.created_at}${error ? `\n${error}` : ''}`;
+    list.append(line);
+  }
+  if (!records.length) {
+    const line = document.createElement('li');
+    line.textContent = '화면에서 접수한 재실행 이력이 없습니다. 기존 명령 실행 기록은 결과 파일에서 확인할 수 있습니다.';
+    list.append(line);
+  }
+}
+
+async function loadReplays(runId, token) {
+  const data = await api(`/api/runs/${encodeURIComponent(runId)}/replays`);
+  if (token !== epoch) return;
+  renderReplays(data.replays);
+  const pending = data.replays.find((item) => activeStates.has(item.status));
+  const last = data.replays[data.replays.length - 1];
+  if (pending) {
+    activeReplay = pending;
+    byId('submit-replay').disabled = true;
+    byId('cancel-replay').disabled = pending.status === 'cancelling';
+    badge('replay-state', statusNames[pending.status], 'wait');
+    clearTimeout(replayTimer);
+    const replayToken = ++replayEpoch;
+    replayTimer = setTimeout(() => watchReplay(runId, pending.replay_id, token, replayToken), 1000);
+  } else {
+    activeReplay = null;
+    byId('submit-replay').disabled = false;
+    byId('cancel-replay').disabled = true;
+    const outcome = last?.result?.replay;
+    badge('replay-state', outcome ? replayNames[outcome.status] || outcome.status
+      : last ? statusNames[last.status] || last.status : '실행 전', outcome?.status === 'passed' ? 'good' : '');
+  }
+}
+
+async function watchReplay(runId, replayId, token, replayToken) {
+  try {
+    const record = await api(`/api/runs/${encodeURIComponent(runId)}/replays/${encodeURIComponent(replayId)}`);
+    if (token !== epoch || replayToken !== replayEpoch) return;
+    activeReplay = record;
+    if (activeStates.has(record.status)) {
+      badge('replay-state', statusNames[record.status], 'wait');
+      byId('cancel-replay').disabled = record.status === 'cancelling';
+      replayTimer = setTimeout(() => watchReplay(runId, replayId, token, replayToken), 1000);
+      return;
+    }
+    const result = await api(current.result_url);
+    if (token !== epoch || replayToken !== replayEpoch) return;
+    renderResult(result);
+    await loadReplays(runId, token);
+    const files = await api(current.artifacts_url);
+    if (token === epoch) renderFiles(files);
+    if (record.error && token === epoch) notice(record.error.message || JSON.stringify(record.error));
+  } catch (error) {
+    if (token !== epoch || replayToken !== replayEpoch || error.name === 'AbortError') return;
+    notice(errorText(error) + '\n상태 새로고침으로 재실행 이력을 다시 조회하세요.');
+    byId('submit-replay').disabled = false;
+  }
+}
+
+byId('replay-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!current) return;
+  const token = epoch;
+  const runId = current.run_id;
+  const targetUrl = byId('replay-url').value.trim();
+  const purpose = byId('replay-purpose').value;
+  if (!replayRequest || replayRequest.target_url !== targetUrl || replayRequest.purpose !== purpose) {
+    replayRequest = {target_url: targetUrl, purpose, request_id: crypto.randomUUID().replaceAll('-', '')};
+  }
+  byId('submit-replay').disabled = true;
+  notice();
+  try {
+    const record = await api(`/api/runs/${encodeURIComponent(runId)}/replays`, {
+      method: 'POST', body: JSON.stringify(replayRequest),
+    });
+    if (token !== epoch) return;
+    replayRequest = null;
+    await loadReplays(runId, token);
+    if (!activeStates.has(record.status)) {
+      const result = await api(current.result_url);
+      if (token === epoch) renderResult(result);
+      const files = await api(current.artifacts_url);
+      if (token === epoch) renderFiles(files);
+    }
+  } catch (error) {
+    if (token === epoch) { notice(errorText(error)); byId('submit-replay').disabled = false; }
+  }
+});
+byId('cancel-replay').addEventListener('click', async () => {
+  if (!current || !activeReplay) return;
+  const token = epoch;
+  const runId = current.run_id;
+  const replayId = activeReplay.replay_id;
+  byId('cancel-replay').disabled = true;
+  try {
+    await api(`/api/runs/${encodeURIComponent(runId)}/replays/${encodeURIComponent(replayId)}/cancel`, {method: 'POST'});
+    if (token === epoch) await loadReplays(runId, token);
+  } catch (error) { if (token === epoch) notice(errorText(error)); }
 });
 
 let remembered = new URL(location.href).searchParams.get('run');
