@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.run_service import RunService
 from app.api.runs import router as runs_router
@@ -31,17 +32,18 @@ def create_app(run_service=None):
 
     application = FastAPI(title='ReproPilot', lifespan=lifespan)
     application.include_router(runs_router)
+    application.mount('/static', StaticFiles(directory=STATIC), name='static')
 
     @application.get('/')
     async def index():
-        """기존 화면을 제공한다. 새 제보 화면은 다음 단계에서 연결한다."""
+        """제보 입력, 추가 답변과 결과 조회 화면을 제공한다."""
         return FileResponse(STATIC / 'index.html')
 
     @application.get('/health')
     async def health():
         """서버 단계와 현재 연결한 기능을 반환한다."""
-        return {'status': 'ok', 'stage': 'answer_api', 'agent_implemented': True,
-                'answers_implemented': True, 'dashboard_implemented': False}
+        return {'status': 'ok', 'stage': 'dashboard', 'agent_implemented': True,
+                'answers_implemented': True, 'dashboard_implemented': True}
 
     @application.get('/demo')
     async def demo():

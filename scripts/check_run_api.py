@@ -162,7 +162,7 @@ class RunApiTests(unittest.TestCase):
     def test_health(self):
         """현재 제공하는 기능과 아직 연결하지 않은 기능을 구분한다."""
         state = self.client.get('/health').json()
-        self.assertEqual(state['stage'], 'answer_api')
+        self.assertEqual(state['stage'], 'dashboard')
         self.assertTrue(state['answers_implemented'])
 
 

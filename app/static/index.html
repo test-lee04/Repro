@@ -1,8 +1,84 @@
-<!doctype html><html lang="ko"><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ReproPilot · Skeleton</title>
-<style>body{font:17px system-ui;background:#f4f6fa;color:#182238;max-width:760px;margin:70px auto;padding:24px}section{background:white;padding:28px;border-radius:16px}a{color:#245de3}</style>
-<h1>ReproPilot</h1><p>버그 재현과 회귀 테스트 생성을 돕는 QA Agent</p>
-<section><h2>프로젝트 스켈레톤</h2><p>자연어 제보 → 브라우저 관찰·재현 → 증거 수집 → 회귀 테스트 생성·검증</p>
-<p>현재 Agent 실행 기능은 미구현입니다. API는 501을 반환합니다.</p>
-<p><a href="/docs">API 명세</a> · <a href="/demo?version=buggy">버그 데모</a> · <a href="/demo?version=fixed">정상 데모</a></p></section></html>
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ReproPilot | 버그 재현 도우미</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+  <script src="/static/dashboard.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div><a class="brand" href="/">ReproPilot</a><p>버그 제보를 실행 가능한 확인 과정으로</p></div>
+    <a href="/docs" target="_blank" rel="noopener">API 설명</a>
+  </header>
+  <main>
+    <section class="intro">
+      <p class="eyebrow">QA 보조 Agent</p>
+      <h1>제보부터 재현 근거까지,<br>한곳에서 확인하세요.</h1>
+      <p>대상 URL과 문제 상황을 입력하면 브라우저에서 재현을 시도하고, 판정 근거와 회귀 테스트를 제공합니다.</p>
+    </section>
+    <div id="notice" class="notice" role="alert" hidden></div>
+    <div class="layout">
+      <div class="left-column">
+        <section class="card">
+          <h2>새 버그 제보</h2>
+          <form id="report-form">
+            <label for="target-url">대상 사이트 URL</label>
+            <input id="target-url" type="url" placeholder="https://" required autocomplete="url">
+            <label for="report">문제 상황과 기대 동작</label>
+            <textarea id="report" rows="7" maxlength="10000" required placeholder="어떤 행동을 했고, 실제로 무엇이 일어났으며, 어떤 결과를 기대했는지 적어 주세요."></textarea>
+            <label for="public-spec">서비스 요구사항 <span class="muted">선택</span></label>
+            <textarea id="public-spec" rows="3" placeholder="정상 동작의 근거가 되는 요구사항이 있으면 적어 주세요."></textarea>
+            <button id="submit-report" type="submit" class="primary">재현 시도 시작</button>
+          </form>
+          <p class="help">코드를 자동 수정하지 않습니다. 현재 입력·클릭·새로고침과 표시 문구·입력값 검증을 지원합니다.</p>
+        </section>
+        <section class="card">
+          <h2>기존 작업 조회</h2>
+          <form id="lookup-form">
+            <label for="lookup-id">작업 식별자</label>
+            <input id="lookup-id" required pattern="[a-f0-9]{32}" maxlength="32" spellcheck="false" autocomplete="off">
+            <button type="submit" class="secondary">작업 불러오기</button>
+          </form>
+          <p class="help">작업 식별자를 보관하면 나중에 같은 결과를 조회할 수 있습니다.</p>
+        </section>
+      </div>
+      <div class="right-column">
+        <section class="card" aria-labelledby="status-heading">
+          <div class="section-heading"><h2 id="status-heading">실행 상태</h2><span id="job-status" class="badge" role="status" aria-live="polite">대기</span></div>
+          <p id="status-description">제보를 접수하거나 기존 작업을 불러오세요.</p>
+          <div id="job-details" hidden>
+            <label for="current-id">현재 작업 식별자</label>
+            <input id="current-id" readonly spellcheck="false">
+            <div id="run-links" class="run-links"></div>
+            <div class="button-row">
+              <button id="refresh-job" type="button" class="secondary">상태 새로고침</button>
+              <button id="cancel-job" type="button" class="danger" disabled>실행 취소</button>
+            </div>
+          </div>
+        </section>
+        <section id="questions-card" class="card" hidden>
+          <h2>확인이 필요한 내용</h2>
+          <p class="help">답변은 원래 제보와 함께 다음 검사에 사용됩니다. 이전 결과는 보존하고 새 브라우저에서 다시 검사합니다.</p>
+          <form id="answers-form"><div id="questions"></div><button id="submit-answers" type="submit" class="primary">답변 제출하고 다시 검사</button></form>
+        </section>
+        <section id="result-card" class="card" hidden>
+          <div class="section-heading"><h2>검사 결과</h2><span id="verdict" class="badge"></span></div>
+          <p id="verdict-reason"></p>
+          <div id="comparison-list" class="comparison-list"></div>
+          <div class="test-state"><h3>회귀 테스트</h3><p id="test-status"></p><p id="test-reason" class="help"></p></div>
+          <details><summary>실행한 행동</summary><ol id="action-list"></ol></details>
+          <details><summary>전체 결과 보기</summary><pre id="raw-result"></pre></details>
+        </section>
+        <section id="files-card" class="card" hidden>
+          <h2>증거와 결과 파일</h2>
+          <p class="help">스크린샷, 실행 기록, 생성한 회귀 테스트를 다운로드할 수 있습니다.</p>
+          <ul id="file-list" class="file-list"></ul>
+        </section>
+      </div>
+    </div>
+  </main>
+  <footer>재현 판정은 이번 실행에서 관찰한 결과입니다. 테스트 생성과 수정 검증 완료는 별도로 표시합니다.</footer>
+</body>
+</html>
