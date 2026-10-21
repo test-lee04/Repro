@@ -1,4 +1,4 @@
-"""제보 해석, 브라우저 실행, 조건 비교와 최종 재현 판정을 연결한다."""
+"""제보 실행과 최종 재현 판정 후 회귀 테스트 파일을 자동 생성한다."""
 
 import asyncio
 import json
@@ -9,6 +9,7 @@ from time import perf_counter
 from pydantic import BaseModel
 
 from app.testing.condition_comparator import compare_condition
+from app.testing.compiler import RecordedTestCompiler, UnsupportedCompilation
 from app.testing.verdict import ReproductionStatus
 
 
@@ -29,7 +30,7 @@ class ReproductionWorkflow:
     def __init__(
         self, parser, condition_planner, loop, checkpoint_reviewer,
         binder, verification_tools, timeout_seconds=300, max_conditions=5,
-        *, assessor,
+        *, assessor, test_compiler=None,
     ):
         """구성 요소와 최종 판정기를 주입하고 실행 제한을 설정한다."""
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0 or max_conditions < 1:
@@ -43,6 +44,7 @@ class ReproductionWorkflow:
         self.binder = binder
         self.verification_tools = verification_tools
         self.assessor = assessor
+        self.test_compiler = test_compiler if test_compiler is not None else RecordedTestCompiler()
         self.timeout_seconds = timeout_seconds
         self.max_conditions = max_conditions
 
@@ -71,7 +73,7 @@ class ReproductionWorkflow:
     async def run(
         self, *, report, session_id, artifact_dir, public_spec="", answers=None
     ) -> dict:
-        """제보 실행부터 최종 판정까지 수행하고 두 결과 파일을 저장한다.
+        """제보 실행부터 최종 판정과 회귀 테스트 생성을 수행한다.
 
         Args:
             report: 사용자가 입력한 버그 제보.
@@ -81,7 +83,7 @@ class ReproductionWorkflow:
             answers: 이전 확인 질문에 대한 답변.
 
         Returns:
-            실행 상태, 조건 검증 결과, 최종 재현 상태와 판정 근거.
+            실행 상태, 최종 재현 판정, 테스트 생성 상태와 파일 경로.
 
         Notes:
             제한 시간에는 최종 판정 시간도 포함한다.
@@ -95,6 +97,11 @@ class ReproductionWorkflow:
             "workflow_status": "running", "verification_status": "inconclusive",
             "reproduction_status": "pending", "assessment_status": "pending",
             "phase": "parse", "questions": [], "checks": [], "error": None,
+            "test_generation": {
+                "test_status": "not_generated", "generation_status": "not_started",
+                "replay_status": "not_run", "reason": "테스트 생성을 시작하지 않았습니다.",
+                "case_path": None, "test_path": None, "error": None,
+            },
         }
         try:
             async with asyncio.timeout(self.timeout_seconds):
@@ -113,11 +120,15 @@ class ReproductionWorkflow:
                     result["assessment"] = assessment
                     result["reproduction_status"] = status.value
                     result["assessment_status"] = "completed"
-                    result["phase"] = "done"
+
                 else:
                     result["assessment"] = self._incomplete_assessment(result)
                     result["reproduction_status"] = result["assessment"]["status"]
                     result["assessment_status"] = "completed"
+
+                result["phase"] = "test_generation"
+                self._generate_test(result, folder)
+                result["phase"] = "done"
 
         except TimeoutError:
             result["workflow_status"] = "time_limit"
@@ -137,15 +148,57 @@ class ReproductionWorkflow:
             if result["assessment_status"] != "completed":
                 result["assessment"] = self._incomplete_assessment(result)
                 result["reproduction_status"] = result["assessment"]["status"]
+            if result["test_generation"]["generation_status"] == "not_started":
+                result["test_generation"].update(
+                    generation_status="skipped",
+                    reason="최종 판정을 완료하지 못해 테스트 생성을 건너뛰었습니다.",
+                )
             result["assessment"]["source_run"] = str(folder / "workflow_result.json")
             result["elapsed_seconds"] = round(perf_counter() - started, 2)
             (folder / "assessment.json").write_text(
                 json.dumps(result["assessment"], ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            (folder / "test_generation.json").write_text(
+                json.dumps(result["test_generation"], ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             (folder / "workflow_result.json").write_text(
                 json.dumps(plain(result), ensure_ascii=False, indent=2), encoding="utf-8"
             )
         return result
+
+    def _generate_test(self, result, folder):
+        """판정과 분리해 테스트 생성 상태와 파일 위치를 기록한다."""
+        generation = result["test_generation"]
+        if result["reproduction_status"] not in {"reproduced", "not_reproduced"}:
+            generation.update(
+                generation_status="skipped",
+                reason="재현 또는 미재현을 확정하지 못해 테스트를 생성하지 않습니다.",
+            )
+            return
+        try:
+            artifact = self.test_compiler.compile_run(result)
+            artifact["source_run"] = str(folder / "workflow_result.json")
+            exported = self.test_compiler.export(artifact, folder / "regression")
+            if exported.get("test_status") != "generated":
+                raise ValueError("생성기가 올바른 생성 완료 상태를 반환하지 않았습니다.")
+            for key in ["case_path", "test_path"]:
+                if not isinstance(exported.get(key), str) or not Path(exported[key]).is_file():
+                    raise ValueError("생성된 테스트 파일을 확인할 수 없습니다.")
+            generation.update(
+                exported, generation_status="completed", replay_status="not_run",
+                reason="회귀 테스트 파일을 생성했습니다. 재실행 검증은 아직 수행하지 않았습니다.",
+            )
+        except UnsupportedCompilation as error:
+            generation.update(
+                test_status="unsupported", generation_status="unsupported", reason=str(error),
+            )
+        except Exception as error:
+            # 파일 생성의 실패를 이미 확인한 재현 판정의 실패로 바꾸지 않는다.
+            generation.update(
+                test_status="environment_error", generation_status="error",
+                reason="회귀 테스트 파일 생성을 완료하지 못했습니다.",
+                error={"type": type(error).__name__, "message": str(error)},
+            )
 
     async def _execute(self, result, *, report, session_id, folder, public_spec, answers):
         """기존 해석, 행동 실행과 비교를 수행하고 중간 종료 이유를 유지한다."""

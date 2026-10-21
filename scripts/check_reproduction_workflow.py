@@ -80,15 +80,28 @@ class FixtureComponents:
         )}
 
     async def run(self, spec, session_id, folder):
-        return {"loop_status": self.loop_status, "history": [{"success": True}] * 3,
-                "question": None}
+        history = []
+        for kind, element_id, tag, name, value in [
+            ("fill", "input-1", "input", "문서 제목", "주간 계획"),
+            ("click", "button-1", "button", "저장", None),
+            ("reload", "page-1", "page", "현재 페이지", None),
+        ]:
+            history.append({
+                "success": True,
+                "action": {"kind": kind, "element_id": element_id, "value": value},
+                "before_elements": [{"element_id": element_id, "dom_id": "", "tag": tag,
+                                     "name": name, "label": name if tag == "input" else "",
+                                     "actions": [kind]}],
+            })
+        return {"loop_status": self.loop_status, "history": history, "question": None}
 
     async def review(self, spec, condition, loop_result):
         return {"review": fixture_review("reached" if self.reached else "inconclusive")}
 
     async def observe(self, session_id):
         return {"observation_id": "o1", "elements": [
-            {"element_id": "e1", "name": "문서 제목", "value": self.actual},
+            {"element_id": "e1", "name": "문서 제목", "value": self.actual,
+             "tag": "input", "supports_value": True},
         ]}
 
     async def bind(self, condition, observation):
@@ -114,11 +127,12 @@ class FixtureComponents:
 
 
 class WorkflowTests(unittest.IsolatedAsyncioTestCase):
-    async def execute(self, components, timeout=1, assessor=None):
+    async def execute(self, components, timeout=1, assessor=None, test_compiler=None):
         with tempfile.TemporaryDirectory() as folder:
             workflow = ReproductionWorkflow(
                 components, components, components, components, components, components,
                 timeout_seconds=timeout, assessor=assessor if assessor is not None else components,
+                test_compiler=test_compiler,
             )
             result = await workflow.run(report="검사용 제보", session_id="test", artifact_dir=folder)
             saved = json.loads((Path(folder) / "workflow_result.json").read_text())
@@ -128,6 +142,12 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(saved["reproduction_status"], result["reproduction_status"])
             self.assertEqual(assessment, saved["assessment"])
             self.assertEqual(assessment["status"], result["reproduction_status"])
+            generation = json.loads((Path(folder) / "test_generation.json").read_text())
+            self.assertEqual(generation, saved["test_generation"])
+            self.assertEqual(generation["replay_status"], "not_run")
+            if generation["test_status"] == "generated":
+                for key in ["case_path", "test_path"]:
+                    self.assertTrue(Path(generation[key]).is_file())
             return result
 
     async def test_mismatch(self):
@@ -250,6 +270,69 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(saved["workflow_status"], "cancelled")
             self.assertEqual(saved["reproduction_status"], "inconclusive")
             self.assertEqual(saved["assessment"], assessment)
+
+
+    async def test_automatic_test_generation(self):
+        """확정한 재현과 미재현 실행에서 테스트 파일을 자동 생성한다."""
+        for actual, status in [("", "reproduced"), ("주간 계획", "not_reproduced")]:
+            with self.subTest(status=status):
+                result = await self.execute(FixtureComponents(actual=actual, assessment_status=status))
+                self.assertEqual(result["test_generation"]["test_status"], "generated")
+                self.assertEqual(result["test_generation"]["action_count"], 3)
+                self.assertEqual(result["test_generation"]["assertion_count"], 1)
+                self.assertEqual(result["reproduction_status"], status)
+
+    async def test_inconclusive_skips_generation(self):
+        """보류한 결과에 확정 테스트 파일을 붙이지 않는다."""
+        result = await self.execute(FixtureComponents())
+        generation = result["test_generation"]
+        self.assertEqual(generation["test_status"], "not_generated")
+        self.assertEqual(generation["generation_status"], "skipped")
+        self.assertIsNone(generation["test_path"])
+
+    async def test_unsupported_locator_preserves_assessment(self):
+        """위치를 다시 찾을 수 없어도 재현 판정을 덮어쓰지 않는다."""
+        class AnonymousComponents(FixtureComponents):
+            async def observe(self, session_id):
+                observation = await super().observe(session_id)
+                observation["elements"][0]["name"] = ""
+                return observation
+        result = await self.execute(AnonymousComponents(assessment_status="reproduced"))
+        self.assertEqual(result["reproduction_status"], "reproduced")
+        self.assertEqual(result["test_generation"]["test_status"], "unsupported")
+
+    async def test_export_failure_preserves_assessment(self):
+        """파일 생성 오류를 제보 재현 여부와 분리한다."""
+        class BrokenCompiler:
+            def compile_run(self, run):
+                return {}
+            def export(self, artifact, folder):
+                raise OSError("검사용 파일 쓰기 오류")
+        result = await self.execute(
+            FixtureComponents(assessment_status="reproduced"), test_compiler=BrokenCompiler()
+        )
+        self.assertEqual(result["reproduction_status"], "reproduced")
+        self.assertEqual(result["workflow_status"], "conditions_checked")
+        self.assertIsNone(result["error"])
+        self.assertEqual(result["test_generation"]["generation_status"], "error")
+        self.assertEqual(result["test_generation"]["test_status"], "environment_error")
+
+    async def test_generation_waits_for_assessment(self):
+        """최종 판정을 마치기 전에 생성기를 호출하지 않는다."""
+        class MustNotRun:
+            def compile_run(self, run):
+                raise AssertionError("판정이 끝나지 않았는데 생성기를 호출했습니다.")
+        result = await self.execute(
+            FixtureComponents(assessment_status="pending"), test_compiler=MustNotRun()
+        )
+        self.assertEqual(result["test_generation"]["generation_status"], "skipped")
+        self.assertEqual(result["error"]["type"], "ValueError")
+
+    async def test_generation_does_not_claim_validation(self):
+        """생성 상태를 재실행 완료나 수정 검증 완료로 표시하지 않는다."""
+        result = await self.execute(FixtureComponents(assessment_status="reproduced"))
+        self.assertEqual(result["test_generation"]["test_status"], "generated")
+        self.assertEqual(result["test_generation"]["replay_status"], "not_run")
 
 
 class CheckpointTests(unittest.TestCase):
@@ -419,6 +502,15 @@ async def live(args):
         print("조건 검증 결과:", result["verification_status"])
         print("최종 재현 상태:", result["reproduction_status"])
         print("판정 이유:", result["assessment"]["reason"])
+        generation = result["test_generation"]
+        print("테스트 생성 상태:", generation["test_status"])
+        print("재실행 상태:", generation["replay_status"])
+        print("테스트 생성 설명:", generation["reason"])
+        if generation["case_path"]:
+            print("테스트 자료:", generation["case_path"])
+            print("실행 코드:", generation["test_path"])
+        if generation["error"]:
+            print("테스트 생성 오류:", generation["error"])
         for check in result["checks"]:
             print(json.dumps(check, ensure_ascii=False, indent=2))
         if result["questions"]:
@@ -435,7 +527,9 @@ async def live(args):
             assert result["verification_status"] == expected_status, "데모의 예상 조건 결과와 다릅니다."
             expected_reproduction = "reproduced" if args.demo == "buggy" else "not_reproduced"
             assert result["reproduction_status"] == expected_reproduction, "데모의 최종 재현 상태가 예상과 다릅니다."
-            print("PASS: 제보부터 행동 실행과 최종 재현 판정까지 자동 연결")
+            assert generation["test_status"] == "generated", "회귀 테스트 파일을 생성하지 못했습니다."
+            assert generation["replay_status"] == "not_run", "생성을 재실행 검증으로 오인하면 안 됩니다."
+            print("PASS: 제보부터 최종 재현 판정과 회귀 테스트 생성까지 자동 연결")
     finally:
         if server is not None:
             server.shutdown()
