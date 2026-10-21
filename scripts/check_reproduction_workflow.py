@@ -1,0 +1,360 @@
+"""통합 실행 흐름의 검증 규칙과 실제 모델·브라우저 연결을 검사한다."""
+
+import argparse
+import asyncio
+import json
+import tempfile
+import threading
+import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from uuid import uuid4
+
+from app.agent.checkpoint_reviewer import (
+    CheckpointReview, CheckpointReviewer, StepCoverage,
+)
+from app.agent.report_schema import BugSpec
+from app.agent.reproduction_workflow import ReproductionWorkflow
+from app.agent.target_binder import TargetBinding
+from app.agent.verification_schema import VerificationPlan
+from app.testing.check_schema import VerificationCondition
+
+
+def fixture_spec():
+    """Return data for tests only, never a runtime topic registry."""
+    return BugSpec(
+        summary="저장한 제목이 유지되지 않습니다.",
+        reported_steps=["제목 입력", "저장", "새로고침"],
+        expected_behavior="제목은 주간 계획이어야 합니다.",
+        expectation_source="report", expectation_evidence="제목은 주간 계획이어야 합니다.",
+    )
+
+
+def fixture_condition():
+    return VerificationCondition(
+        condition_id="title", kind="value", target_description="문서 제목 입력란",
+        operator="equals", expected_value="주간 계획", source="report",
+        evidence="제목은 주간 계획이어야 합니다.", checkpoint="저장 후 새로고침한 직후",
+    )
+
+
+def fixture_review(status="reached"):
+    return CheckpointReview(
+        status=status,
+        coverage=[StepCoverage(step_number=index, action_numbers=[index], reason="실행 기록")
+                  for index in range(1, 4)] if status == "reached" else [],
+        checkpoint_action_numbers=[3] if status == "reached" else [],
+        reason="행동 기록을 확인했습니다." if status == "reached" else "근거가 부족합니다.",
+    )
+
+
+class FixtureComponents:
+    """Injectable component doubles used only in these tests."""
+
+    def __init__(self, actual="", loop_status="finish_selected", reached=True,
+                 binding_status="bound", read_status="ready", delay=0):
+        self.actual, self.loop_status, self.reached = actual, loop_status, reached
+        self.binding_status, self.read_status, self.delay = binding_status, read_status, delay
+        self.read_calls = 0
+        self.bind_calls = 0
+        self.parse_calls = 0
+        self.needs_information = False
+
+    async def parse(self, **kwargs):
+        self.parse_calls += 1
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        return {"spec": fixture_spec()}
+
+    async def plan(self, spec, **kwargs):
+        return {"plan": VerificationPlan(
+            status="needs_information" if self.needs_information else "candidate",
+            summary="검사 결과 형식을 준비했습니다.",
+            conditions=[] if self.needs_information else [fixture_condition()],
+            questions=["정상 동작은 무엇인가요?"] if self.needs_information else [],
+            limitation=None,
+        )}
+
+    async def run(self, spec, session_id, folder):
+        return {"loop_status": self.loop_status, "history": [{"success": True}] * 3,
+                "question": None}
+
+    async def review(self, spec, condition, loop_result):
+        return {"review": fixture_review("reached" if self.reached else "inconclusive")}
+
+    async def observe(self, session_id):
+        return {"observation_id": "o1", "elements": []}
+
+    async def bind(self, condition, observation):
+        self.bind_calls += 1
+        is_bound = self.binding_status == "bound"
+        return {"condition_id": condition.condition_id, "observation_id": "o1",
+                "binding": TargetBinding(
+                    status=self.binding_status, element_id="e1" if is_bound else None,
+                    candidate_ids=["e1"] if is_bound else [], reason="검사용 연결 결과",
+                )}
+
+    async def read(self, session_id, observation_id, element_id, kind):
+        self.read_calls += 1
+        return {"observation_id": observation_id, "element_id": element_id,
+                "kind": kind, "status": self.read_status, "actual_value": self.actual}
+
+
+class WorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def execute(self, components, timeout=1):
+        with tempfile.TemporaryDirectory() as folder:
+            workflow = ReproductionWorkflow(
+                components, components, components, components, components, components,
+                timeout_seconds=timeout,
+            )
+            result = await workflow.run(report="검사용 제보", session_id="test", artifact_dir=folder)
+            saved = json.loads((Path(folder) / "workflow_result.json").read_text())
+            self.assertEqual(saved["workflow_status"], result["workflow_status"])
+            self.assertEqual(result["reproduction_status"], "pending")
+            return result
+
+    async def test_mismatch(self):
+        """Confirmed checkpoint plus a real mismatch stays a condition result."""
+        result = await self.execute(FixtureComponents(actual=""))
+        self.assertEqual(result["verification_status"], "unsatisfied")
+
+    async def test_match(self):
+        result = await self.execute(FixtureComponents(actual="주간 계획"))
+        self.assertEqual(result["verification_status"], "satisfied")
+
+    async def test_finish_alone_is_not_checkpoint(self):
+        components = FixtureComponents(reached=False)
+        result = await self.execute(components)
+        self.assertEqual(result["verification_status"], "inconclusive")
+        self.assertEqual(components.bind_calls, 0)
+
+    async def test_execution_limits(self):
+        for status in ["time_limit", "action_limit", "model_limit", "tool_error"]:
+            with self.subTest(status=status):
+                components = FixtureComponents(loop_status=status)
+                result = await self.execute(components)
+                self.assertEqual(result["workflow_status"], status)
+                self.assertEqual(components.bind_calls, 0)
+
+    async def test_missing_target(self):
+        components = FixtureComponents(binding_status="not_observed")
+        result = await self.execute(components)
+        self.assertEqual(result["verification_status"], "inconclusive")
+        self.assertEqual(components.read_calls, 0)
+
+    async def test_stale_read(self):
+        result = await self.execute(FixtureComponents(read_status="stale"))
+        self.assertEqual(result["verification_status"], "inconclusive")
+
+    async def test_clarification(self):
+        components = FixtureComponents()
+        components.needs_information = True
+        result = await self.execute(components)
+        self.assertEqual(result["workflow_status"], "needs_information")
+        self.assertTrue(result["questions"])
+
+    async def test_global_timeout(self):
+        result = await self.execute(FixtureComponents(delay=1), timeout=0.01)
+        self.assertEqual(result["workflow_status"], "time_limit")
+
+
+class CheckpointTests(unittest.TestCase):
+    def test_complete_references(self):
+        CheckpointReviewer.validate_references(
+            fixture_review(), fixture_spec().reported_steps, [{"success": True}] * 3
+        )
+
+    def test_missing_step(self):
+        review = fixture_review()
+        review.coverage.pop()
+        with self.assertRaises(ValueError):
+            CheckpointReviewer.validate_references(review, ["a", "b", "c"], [{"success": True}] * 3)
+
+    def test_failed_action(self):
+        with self.assertRaises(ValueError):
+            CheckpointReviewer.validate_references(
+                fixture_review(), ["a", "b", "c"],
+                [{"success": True}, {"success": False}, {"success": True}],
+            )
+
+    def test_reused_action(self):
+        review = fixture_review()
+        review.coverage[1].action_numbers = [1]
+        with self.assertRaises(ValueError):
+            CheckpointReviewer.validate_references(review, ["a", "b", "c"], [{"success": True}] * 3)
+
+    def test_invented_action(self):
+        review = fixture_review()
+        review.coverage[-1].action_numbers = [4]
+        with self.assertRaises(ValueError):
+            CheckpointReviewer.validate_references(review, ["a", "b", "c"], [{"success": True}] * 3)
+
+    def test_action_after_checkpoint(self):
+        with self.assertRaises(ValueError):
+            CheckpointReviewer.validate_references(
+                fixture_review(), ["a", "b", "c"], [{"success": True}] * 4
+            )
+
+
+class ReviewerContractTests(unittest.IsolatedAsyncioTestCase):
+    def execution(self):
+        history = []
+        for kind, element_id, name, value in [
+            ("fill", "title", "문서 제목", "주간 계획"),
+            ("click", "save", "저장", None),
+            ("reload", "page", "현재 페이지", None),
+        ]:
+            history.append({
+                "action": {"kind": kind, "element_id": element_id, "value": value},
+                "success": True, "error_type": None,
+                "before_elements": [{"element_id": element_id, "name": name,
+                                     "tag": "input" if kind == "fill" else "button"}],
+            })
+        return {"loop_status": "finish_selected", "history": history}
+
+    def client(self, reviews):
+        class Client:
+            def __init__(self):
+                self.calls = []
+
+            async def generate(self, messages, schema):
+                self.calls.append(json.loads(json.dumps(messages)))
+                return {"content": reviews.pop(0).model_dump_json(), "usage": {}}
+        return Client()
+
+    async def test_input_contains_execution_references(self):
+        client = self.client([fixture_review()])
+        result = await CheckpointReviewer(client).review(
+            fixture_spec(), fixture_condition(), self.execution()
+        )
+        self.assertEqual(result["review"].status, "reached")
+        payload = json.loads(client.calls[0][1]["content"])
+        self.assertEqual([item["kind"] for item in payload["actions"]],
+                         ["fill", "click", "reload"])
+        self.assertNotIn("expected_value", payload)
+        self.assertNotIn("actual_behavior", payload)
+
+    async def test_retry_revalidates_references(self):
+        invalid = fixture_review()
+        invalid.coverage[-1].action_numbers = [99]
+        client = self.client([invalid, fixture_review()])
+        result = await CheckpointReviewer(client).review(
+            fixture_spec(), fixture_condition(), self.execution()
+        )
+        self.assertEqual(len(result["attempts"]), 2)
+        self.assertIsNotNone(result["attempts"][0]["validation_error"])
+
+    async def test_no_history_does_not_call_model(self):
+        client = self.client([])
+        result = await CheckpointReviewer(client).review(
+            fixture_spec(), fixture_condition(), {"loop_status": "finish_selected", "history": []}
+        )
+        self.assertEqual(result["review"].status, "inconclusive")
+        self.assertEqual(client.calls, [])
+
+
+def start_demo(version):
+    """Serve a local fixture. Its version is never passed to any agent."""
+    save = "localStorage.setItem('saved_title', titleInput.value);" if version == "fixed" else ""
+    html = '''<!doctype html><html lang="ko"><body>
+        <label>문서 제목<input id="titleInput"></label>
+        <button onclick="saveTitle()">저장</button>
+        <output id="message"></output>
+        <script>
+        const titleInput = document.getElementById('titleInput');
+        titleInput.value = localStorage.getItem('saved_title') || '';
+        function saveTitle() {
+            SAVE_SCRIPT
+            document.getElementById('message').innerText = '저장했습니다.';
+        }
+        </script></body></html>'''.replace("SAVE_SCRIPT", save).encode("utf-8")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html)))
+            self.end_headers()
+            self.wfile.write(html)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}/"
+
+
+async def live(args):
+    """Run on a supplied URL or an isolated fixture using the same workflow."""
+    from dotenv import load_dotenv
+    from app.agent.action_planner import ActionPlanner
+    from app.agent.model_client import build_model_client
+    from app.agent.report_parser import ReportParser
+    from app.agent.reproduction_loop import ReproductionLoop
+    from app.agent.target_binder import TargetBinder
+    from app.agent.verification_planner import VerificationPlanner
+    from app.browser.session import PlaywrightSessions
+    from app.browser.tools import PlaywrightTools
+    from app.browser.verification import VerificationBrowser
+
+    load_dotenv()
+    server = None
+    if args.demo:
+        server, url = start_demo(args.demo)
+    else:
+        url = args.url
+    folder = Path("artifacts") / f"workflow-{uuid4().hex}"
+    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        client = build_model_client()
+        async with PlaywrightSessions(targets={}) as sessions:
+            session_id = await sessions.open(run_id="workflow", start_url=url)
+            workflow = ReproductionWorkflow(
+                ReportParser(client), VerificationPlanner(client),
+                ReproductionLoop(ActionPlanner(client), PlaywrightTools(sessions, folder)),
+                CheckpointReviewer(client), TargetBinder(client, diagnostic_dir=folder),
+                VerificationBrowser(sessions, folder), timeout_seconds=args.timeout,
+            )
+            result = await workflow.run(
+                report=args.report, public_spec=args.public_spec,
+                session_id=session_id, artifact_dir=folder,
+            )
+        print("실행 종료 상태:", result["workflow_status"])
+        print("조건 검증 결과:", result["verification_status"])
+        for check in result["checks"]:
+            print(json.dumps(check, ensure_ascii=False, indent=2))
+        if result["questions"]:
+            print("추가 질문:", result["questions"])
+        if result["error"]:
+            print("오류:", json.dumps(result["error"], ensure_ascii=False, indent=2))
+        print("총 소요 시간:", result["elapsed_seconds"], "초")
+        print("저장 위치:", folder)
+        print("조건 검증 결과이며 전체 버그 재현 판정은 아직 pending입니다.")
+        if args.demo:
+            # 데모의 정답은 검사 스크립트만 알고 있으며 실행 흐름에 전달하지 않는다.
+            expected_status = "unsatisfied" if args.demo == "buggy" else "satisfied"
+            assert result["workflow_status"] == "conditions_checked", "조건 검사까지 도달하지 못했습니다."
+            assert result["verification_status"] == expected_status, "데모의 예상 조건 결과와 다릅니다."
+            print("PASS: 데모의 행동 실행과 조건 검증 결과")
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--url")
+    target.add_argument("--demo", choices=["buggy", "fixed"])
+    parser.add_argument("--report")
+    parser.add_argument("--public-spec", default="")
+    parser.add_argument("--timeout", type=float, default=300)
+    args = parser.parse_args()
+    if args.url or args.demo:
+        if not args.report:
+            parser.error("--report로 제보 내용을 입력해야 합니다.")
+        asyncio.run(live(args))
+    else:
+        unittest.main(argv=["check_reproduction_workflow"], verbosity=2)
