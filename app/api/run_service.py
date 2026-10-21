@@ -11,13 +11,14 @@ from uuid import uuid4
 from app.testing.replay import write_json
 
 
-async def execute_workflow(request, run_id, folder):
+async def execute_workflow(request, run_id, folder, *, answers=None):
     """기존 재현 흐름을 실행하고 브라우저 환경을 정리한다.
 
     Args:
         request: URL과 제보가 검증된 실행 요청.
         run_id: API가 생성한 작업 식별자.
         folder: 작업별 결과 저장 폴더.
+        answers: 실제 질문과 사용자 답변의 누적 기록.
 
     Returns:
         기존 실행 흐름의 최종 결과.
@@ -49,7 +50,7 @@ async def execute_workflow(request, run_id, folder):
         )
         return await workflow.run(
             report=request.report, public_spec=request.target.public_spec or '',
-            session_id=session_id, artifact_dir=folder,
+            session_id=session_id, artifact_dir=folder, answers=answers,
         )
 
 
@@ -90,7 +91,11 @@ class RunService:
         write_json(self.folder(run_id) / 'api_state.json', record)
 
     def submit(self, request):
-        """작업을 접수한 뒤 실행 완료를 기다리지 않고 식별자를 반환한다."""
+        """새 제보를 접수하고 작업 식별자를 즉시 반환한다."""
+        return self._submit(request, history=[], parent=None)
+
+    def _submit(self, request, *, history, parent):
+        """원래 요청과 누적 답변으로 독립된 실행 폴더를 만든다."""
         if self.closed:
             raise RuntimeError('서버가 종료 중입니다.')
         if request.target is None or request.mode.value != 'agent':
@@ -101,12 +106,17 @@ class RunService:
             'created_at': datetime.now(timezone.utc).isoformat(),
             'result_url': f'/api/runs/{run_id}/result',
             'artifacts_url': f'/api/runs/{run_id}/artifacts',
+            'parent_run_id': parent['run_id'] if parent else None,
+            'root_run_id': parent.get('root_run_id', parent['run_id']) if parent else run_id,
+            'clarification_round': parent.get('clarification_round', 0) + 1 if parent else 0,
+            'questions': [],
         }
         folder = self.folder(run_id)
         folder.mkdir()
         write_json(folder / 'request.json', request.model_dump(mode='json'))
+        write_json(folder / 'clarification_history.json', {'answers': history})
         self.save(run_id)
-        task = asyncio.create_task(self._execute(run_id, request))
+        task = asyncio.create_task(self._execute(run_id, request, history))
         self.tasks[run_id] = task
         task.add_done_callback(lambda completed: self._finished(run_id, completed))
         return self.get(run_id)
@@ -118,14 +128,23 @@ class RunService:
             self.records[run_id]['status'] = 'cancelled'
             self.save(run_id)
 
-    async def _execute(self, run_id, request):
+    async def _execute(self, run_id, request, history):
         """동시 실행을 한 건으로 제한하고 기존 실행 처리를 호출한다."""
         record = self.records[run_id]
         try:
             async with self.semaphore:
                 record['status'] = 'running'
                 self.save(run_id)
-                result = await self.worker(request, run_id, self.folder(run_id))
+                if history:
+                    from app.agent.report_schema import ClarificationAnswer
+                    answers = [ClarificationAnswer(question=item['question'], answer=item['answer'])
+                               for item in history]
+                    result = await self.worker(request, run_id, self.folder(run_id), answers=answers)
+                else:
+                    result = await self.worker(request, run_id, self.folder(run_id))
+                if result.get('workflow_status') == 'needs_information':
+                    record['questions'] = self._question_entries(run_id, result)
+                    result['clarification_questions'] = copy.deepcopy(record['questions'])
                 write_json(self.folder(run_id) / 'workflow_result.json', result)
                 workflow_status = result.get('workflow_status')
                 record['status'] = (
@@ -143,10 +162,73 @@ class RunService:
         finally:
             self.save(run_id)
 
+    @staticmethod
+    def _question_entries(run_id, result):
+        """원래 질문 문구에 작업별 고정 식별자를 부여한다."""
+        questions = result.get('questions')
+        if not isinstance(questions, list) or not questions:
+            raise ValueError('정보 부족 상태에는 실제 확인 질문이 필요합니다.')
+        entries = []
+        for index, question in enumerate(questions, 1):
+            if not isinstance(question, str) or not question.strip():
+                raise ValueError('확인 질문은 비어 있지 않은 문자열이어야 합니다.')
+            entries.append({'question_id': f'{run_id}-q{index}', 'question': question})
+        return entries
+
+    def answer(self, run_id, submitted):
+        """서버가 제시한 질문의 답변을 받아 연결된 새 실행을 만든다.
+
+        Args:
+            run_id: 추가 질문이 필요한 이전 작업 식별자.
+            submitted: 질문 식별자를 키로 사용하는 답변 사전.
+
+        Returns:
+            원래 제보와 누적 답변을 사용하는 새 작업의 상태.
+
+        Notes:
+            이전 결과와 증거를 보존하며 브라우저를 새로 연다.
+            이미 처리한 동일 답변은 기존 후속 작업을 반환한다.
+        """
+        parent = self.get(run_id)
+        if parent['status'] != 'needs_information':
+            raise RuntimeError('추가 질문이 필요한 작업에만 답변할 수 있습니다.')
+        questions = parent.get('questions') or self._question_entries(run_id, self.result(run_id))
+        expected_ids = {item['question_id'] for item in questions}
+        if not isinstance(submitted, dict) or set(submitted) != expected_ids:
+            raise ValueError('현재 작업의 모든 질문 식별자에 답변을 하나씩 제출하세요.')
+        if any(not isinstance(value, str) or not value.strip() or len(value) > 10000
+               for value in submitted.values()):
+            raise ValueError('각 답변은 비어 있지 않은 10000자 이하의 문자열이어야 합니다.')
+        normalized = {key: value.strip() for key, value in submitted.items()}
+        previous = parent.get('submitted_answers')
+        if parent.get('child_run_id'):
+            if previous == normalized:
+                return self.get(parent['child_run_id'])
+            raise RuntimeError('이미 답변한 작업입니다. 연결된 새 작업의 질문을 확인하세요.')
+        if parent.get('clarification_round', 0) >= 5:
+            raise RuntimeError('추가 답변은 최대 5회까지 연결합니다. 새 제보로 내용을 정리하세요.')
+        from app.schemas import RunRequest
+        folder = self.folder(run_id)
+        request = RunRequest.model_validate_json((folder / 'request.json').read_text(encoding='utf-8'))
+        history_path = folder / 'clarification_history.json'
+        history = json.loads(history_path.read_text(encoding='utf-8'))['answers'] if history_path.exists() else []
+        history.extend({'question_id': item['question_id'], 'question': item['question'],
+                        'answer': normalized[item['question_id']], 'source_run_id': run_id}
+                       for item in questions)
+        child = self._submit(request, history=history, parent=parent)
+        self.records[run_id].update(child_run_id=child['run_id'], submitted_answers=normalized,
+                                    questions=questions)
+        self.save(run_id)
+        return child
+
     def get(self, run_id):
         """내부 상태를 바꿀 수 없도록 복사본을 반환한다."""
         self.folder(run_id)
-        return copy.deepcopy(self.records[run_id])
+        record = self.records[run_id]
+        if record['status'] == 'needs_information' and not record.get('questions'):
+            record['questions'] = self._question_entries(run_id, self.result(run_id))
+            self.save(run_id)
+        return copy.deepcopy(record)
 
     def result(self, run_id):
         """저장한 결과를 반환하고 실행 중이면 재조회를 요청한다."""

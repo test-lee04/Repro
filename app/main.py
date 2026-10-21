@@ -40,8 +40,8 @@ def create_app(run_service=None):
     @application.get('/health')
     async def health():
         """서버 단계와 현재 연결한 기능을 반환한다."""
-        return {'status': 'ok', 'stage': 'run_api', 'agent_implemented': True,
-                'answers_implemented': False, 'dashboard_implemented': False}
+        return {'status': 'ok', 'stage': 'answer_api', 'agent_implemented': True,
+                'answers_implemented': True, 'dashboard_implemented': False}
 
     @application.get('/demo')
     async def demo():

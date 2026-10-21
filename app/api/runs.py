@@ -61,11 +61,10 @@ async def get_artifact(run_id: str, artifact_id: str, request: Request):
     return FileResponse(path, filename=path.name, media_type='application/octet-stream')
 
 
-@router.post('/{run_id}/answers')
+@router.post('/{run_id}/answers', status_code=202)
 async def answer_run(run_id: str, payload: AnswersRequest, request: Request):
-    """추가 답변 제출은 다음 단계에서 연결한다."""
-    call(service(request).get, run_id)
-    raise HTTPException(501, '추가 답변 제출은 다음 단계에서 연결합니다. 질문은 결과에서 확인할 수 있습니다.')
+    """실제 질문에 답변하고 연결된 새 실행을 접수한다."""
+    return call(service(request).answer, run_id, payload.answers)
 
 
 @router.get('/{run_id}/events')

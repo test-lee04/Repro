@@ -119,7 +119,7 @@ class RunApiTests(unittest.TestCase):
         self.wait(run_id, {'needs_information'})
         result = self.client.get(f'/api/runs/{run_id}/result').json()
         self.assertTrue(result['questions'])
-        self.assertEqual(self.client.post(f'/api/runs/{run_id}/answers', json={'answers': {}}).status_code, 501)
+        self.assertEqual(self.client.post(f'/api/runs/{run_id}/answers', json={'answers': {}}).status_code, 422)
 
     def test_download(self):
         """목록에 있는 파일을 다운로드하고 없는 식별자는 거부한다."""
@@ -162,8 +162,8 @@ class RunApiTests(unittest.TestCase):
     def test_health(self):
         """현재 제공하는 기능과 아직 연결하지 않은 기능을 구분한다."""
         state = self.client.get('/health').json()
-        self.assertEqual(state['stage'], 'run_api')
-        self.assertFalse(state['answers_implemented'])
+        self.assertEqual(state['stage'], 'answer_api')
+        self.assertTrue(state['answers_implemented'])
 
 
 def live_demo(version):
