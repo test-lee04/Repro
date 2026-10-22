@@ -32,7 +32,7 @@ class VerificationCondition(StrictModel):
 
     Notes:
         이 모델은 조건의 형식과 필드 간 일관성을 검사한다.
-        실제 요소 연결과 비교 실행은 후속 단계에서 구현한다.
+        실제 요소 연결과 비교는 브라우저 검증 도구와 조건 비교기에서 수행한다.
     """
 
     condition_id: str = Field(min_length=1)

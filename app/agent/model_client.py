@@ -18,7 +18,7 @@ class JsonModelClient(Protocol):
 class OllamaJsonClient:
     def __init__(self):
         self.model = os.getenv(
-            "OLLAMA_MODEL", "qwen3:4b"
+            "OLLAMA_MODEL", "qwen3:8b"
         )
         self.client = AsyncClient(
             host=os.getenv(
